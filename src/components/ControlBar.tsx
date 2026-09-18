@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 
 interface ControlBarProps {
+  roomId: string;
   isAudioMuted: boolean;
   isVideoOff: boolean;
   isScreenSharing: boolean;
@@ -28,6 +29,7 @@ interface ControlBarProps {
 }
 
 export const ControlBar: React.FC<ControlBarProps> = ({
+  roomId,
   isAudioMuted,
   isVideoOff,
   isScreenSharing,
@@ -43,7 +45,8 @@ export const ControlBar: React.FC<ControlBarProps> = ({
   const [copied, setCopied] = useState(false);
 
   const handleCopyLink = () => {
-    navigator.clipboard.writeText(window.location.href);
+    const inviteUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomId)}`;
+    navigator.clipboard.writeText(inviteUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

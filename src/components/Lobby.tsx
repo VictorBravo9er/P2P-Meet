@@ -43,6 +43,12 @@ export const Lobby: React.FC<LobbyProps> = ({
   const previewVideoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
+    if (initialRoomId) {
+      setRoomId(initialRoomId);
+    }
+  }, [initialRoomId]);
+
+  useEffect(() => {
     if (previewVideoRef.current && localStream) {
       previewVideoRef.current.srcObject = localStream;
     }
@@ -192,9 +198,21 @@ export const Lobby: React.FC<LobbyProps> = ({
         {/* Right: Join / Create Form */}
         <div className="lg:col-span-5 bg-surface/80 backdrop-blur-xl border border-slate-800/80 rounded-3xl p-6 md:p-8 shadow-xl">
           <h2 className="text-xl font-bold text-slate-100">Ready to join?</h2>
-          <p className="text-sm text-slate-400 mt-1 mb-6">
-            Enter your name and a room code to get started.
+          <p className="text-sm text-slate-400 mt-1 mb-5">
+            Enter your name and confirm the room code to get started.
           </p>
+
+          {initialRoomId && (
+            <div className="mb-5 p-3.5 rounded-2xl bg-primary-500/10 border border-primary-500/20 flex items-center gap-3">
+              <div className="p-2 rounded-xl bg-primary-600/20 text-primary-300">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div className="text-xs">
+                <span className="text-slate-400 block">Invited to Room:</span>
+                <span className="font-mono font-bold text-primary-300 text-sm">{initialRoomId}</span>
+              </div>
+            </div>
+          )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>

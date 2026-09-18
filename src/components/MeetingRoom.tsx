@@ -70,7 +70,8 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({
   };
 
   const handleCopyLink = () => {
-    navigator.clipboard.writeText(window.location.href);
+    const inviteUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomId)}`;
+    navigator.clipboard.writeText(inviteUrl);
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
   };
@@ -197,6 +198,7 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({
 
       {/* Floating Bottom Control Bar */}
       <ControlBar
+        roomId={roomId}
         isAudioMuted={isAudioMuted}
         isVideoOff={isVideoOff}
         isScreenSharing={isScreenSharing}

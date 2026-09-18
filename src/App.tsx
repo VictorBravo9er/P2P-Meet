@@ -6,19 +6,23 @@ import { MeetingRoom } from './components/MeetingRoom';
 import { SettingsModal } from './components/SettingsModal';
 
 export function App() {
-  const [roomId, setRoomId] = useState<string>('');
+  const [roomId, setRoomId] = useState<string>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const queryRoom = params.get('room');
+      if (queryRoom) return queryRoom;
+
+      // Also support hash #room=xyz
+      const hash = window.location.hash.replace(/^#\/?/, '');
+      const hashParams = new URLSearchParams(hash);
+      return hashParams.get('room') || '';
+    } catch {
+      return '';
+    }
+  });
   const [userName, setUserName] = useState<string>('');
   const [inMeeting, setInMeeting] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
-
-  // Parse URL query param `?room=...`
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const urlRoom = params.get('room');
-    if (urlRoom) {
-      setRoomId(urlRoom);
-    }
-  }, []);
 
   // Media streams hook
   const {
