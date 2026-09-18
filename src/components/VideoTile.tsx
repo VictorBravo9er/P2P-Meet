@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { MicOff, Monitor, User } from 'lucide-react';
 import { Participant } from '../types/meeting';
+import { getStoredUserSettings, UserSettings } from '../services/settings';
 
 interface VideoTileProps {
   participant: Participant;
@@ -10,6 +11,20 @@ interface VideoTileProps {
 export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = false }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [trackRevision, setTrackRevision] = useState(0);
+  const [userSettings, setUserSettings] = useState<UserSettings>(getStoredUserSettings);
+
+  useEffect(() => {
+    const handleSettingsChanged = (e: Event) => {
+      const customEvent = e as CustomEvent<UserSettings>;
+      if (customEvent.detail) {
+        setUserSettings(customEvent.detail);
+      }
+    };
+    window.addEventListener('p2p_settings_changed', handleSettingsChanged);
+    return () => {
+      window.removeEventListener('p2p_settings_changed', handleSettingsChanged);
+    };
+  }, []);
 
   useEffect(() => {
     const videoEl = videoRef.current;
@@ -55,7 +70,7 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = fals
   return (
     <div
       className={`relative w-full h-full min-h-[220px] rounded-2xl overflow-hidden bg-surface border transition-all duration-300 flex items-center justify-center select-none shadow-lg ${
-        participant.isSpeaking
+        participant.isSpeaking && userSettings.speakingIndicator
           ? 'border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.35)]'
           : 'border-slate-800 hover:border-slate-700'
       }`}
@@ -67,7 +82,7 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = fals
         playsInline
         muted={isSelf} // Crucial: Always mute local audio to avoid audio feedback loop
         className={`w-full h-full object-cover transition-opacity duration-300 ${
-          isSelf && !participant.isScreenSharing ? 'scale-x-[-1]' : ''
+          isSelf && !participant.isScreenSharing && userSettings.mirrorSelfVideo ? 'scale-x-[-1]' : ''
         } ${hasVideoTrack ? 'opacity-100' : 'opacity-0'}`}
       />
 

@@ -3,6 +3,7 @@ import { RealtimeChannel } from '@supabase/supabase-js';
 import { getSupabaseClient } from '../services/supabase';
 import { PeerConnectionManager } from '../services/webrtc';
 import { Participant, SignalMessage, ChatMessage } from '../types/meeting';
+import { getStoredUserSettings, playNotificationChime } from '../services/settings';
 
 interface UseMeetingRoomOptions {
   roomId: string;
@@ -73,13 +74,21 @@ export function useMeetingRoom({
   }, []);
 
   // Incoming chat message
-  const handleChatMessage = useCallback((message: ChatMessage) => {
-    setChatMessages((prev) => {
-      // Avoid duplicates
-      if (prev.some((m) => m.id === message.id)) return prev;
-      return [...prev, message];
-    });
-  }, []);
+  const handleChatMessage = useCallback(
+    (message: ChatMessage) => {
+      const userSettings = getStoredUserSettings();
+      if (userSettings.chatSoundNotification && message.senderId !== localPeerId) {
+        playNotificationChime();
+      }
+
+      setChatMessages((prev) => {
+        // Avoid duplicates
+        if (prev.some((m) => m.id === message.id)) return prev;
+        return [...prev, message];
+      });
+    },
+    [localPeerId]
+  );
 
   // Send a chat message (tries WebRTC DataChannel first, mirrors with broadcast)
   const sendChat = useCallback(
