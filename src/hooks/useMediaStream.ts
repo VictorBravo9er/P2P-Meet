@@ -36,6 +36,7 @@ export function useMediaStream(): UseMediaStreamResult {
   const localStreamRef = useRef<MediaStream | null>(null);
   const originalCameraTrackRef = useRef<MediaStreamTrack | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const isSpeakingRef = useRef<boolean>(false);
@@ -66,6 +67,10 @@ export function useMediaStream(): UseMediaStreamResult {
     if (!audioTrack) return;
 
     try {
+      if (audioSourceRef.current) {
+        audioSourceRef.current.disconnect();
+        audioSourceRef.current = null;
+      }
       if (audioContextRef.current) {
         audioContextRef.current.close().catch(() => {});
       }
@@ -82,8 +87,22 @@ export function useMediaStream(): UseMediaStreamResult {
       const source = audioCtx.createMediaStreamSource(new MediaStream([audioTrack]));
       source.connect(analyser);
 
+      // Store source in ref to prevent V8/SpiderMonkey garbage collection from terminating audio
+      audioSourceRef.current = source;
       audioContextRef.current = audioCtx;
       analyserRef.current = analyser;
+
+      if (audioCtx.state === 'suspended') {
+        const resumeAudio = () => {
+          if (audioCtx.state === 'suspended') {
+            audioCtx.resume().catch(() => {});
+          }
+          window.removeEventListener('click', resumeAudio);
+          window.removeEventListener('keydown', resumeAudio);
+        };
+        window.addEventListener('click', resumeAudio);
+        window.addEventListener('keydown', resumeAudio);
+      }
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
@@ -124,10 +143,19 @@ export function useMediaStream(): UseMediaStreamResult {
     try {
       setError(null);
 
-      // Avoid exact constraints which throw OverconstrainedError in many browsers
+      // Explicit WebRTC audio constraints prevent acoustic feedback loop and premature mic clamping
       const audioConstraint: boolean | MediaTrackConstraints = selectedAudioDeviceId
-        ? { deviceId: selectedAudioDeviceId }
-        : true;
+        ? {
+            deviceId: selectedAudioDeviceId,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          }
+        : {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          };
 
       const videoConstraint: boolean | MediaTrackConstraints = selectedVideoDeviceId
         ? { deviceId: selectedVideoDeviceId, width: { ideal: 1280 }, height: { ideal: 720 } }
@@ -153,7 +181,13 @@ export function useMediaStream(): UseMediaStreamResult {
       console.error('Failed to get camera/mic stream:', err);
       // Fallback: try audio only if video fails
       try {
-        const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
         localStreamRef.current = audioStream;
         setLocalStream(audioStream);
         setIsVideoOff(true);
@@ -182,6 +216,10 @@ export function useMediaStream(): UseMediaStreamResult {
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
     }
+    if (audioSourceRef.current) {
+      audioSourceRef.current.disconnect();
+      audioSourceRef.current = null;
+    }
     if (audioContextRef.current) {
       audioContextRef.current.close().catch(() => {});
       audioContextRef.current = null;
@@ -199,6 +237,9 @@ export function useMediaStream(): UseMediaStreamResult {
       }
       if (animFrameRef.current) {
         cancelAnimationFrame(animFrameRef.current);
+      }
+      if (audioSourceRef.current) {
+        audioSourceRef.current.disconnect();
       }
       if (audioContextRef.current) {
         audioContextRef.current.close().catch(() => {});
