@@ -43,13 +43,18 @@ export class PeerConnectionManager {
     for (const [peerId, pc] of this.peerConnections.entries()) {
       if (pc.connectionState === 'closed') continue;
 
-      const senders = pc.getSenders();
-
       if (stream) {
         stream.getTracks().forEach((track) => {
-          const sender = senders.find((s) => s.track && s.track.kind === track.kind);
-          if (sender) {
-            sender.replaceTrack(track).catch((err) => {
+          // Look for existing transceiver or sender for this track's kind
+          const transceivers = pc.getTransceivers();
+          const transceiver = transceivers.find(
+            (t) =>
+              (t.sender.track && t.sender.track.kind === track.kind) ||
+              (t.receiver.track && t.receiver.track.kind === track.kind)
+          );
+
+          if (transceiver && transceiver.sender) {
+            transceiver.sender.replaceTrack(track).catch((err) => {
               console.error(`Failed to replace track for peer ${peerId}:`, err);
             });
           } else {
@@ -57,10 +62,10 @@ export class PeerConnectionManager {
           }
         });
       } else if (prevStream) {
-        // Local stream stopped
-        senders.forEach((sender) => {
+        // Stream stopped: replace track with null
+        pc.getSenders().forEach((sender) => {
           if (sender.track) {
-            sender.replaceTrack(null).catch(console.error);
+            sender.replaceTrack(null).catch(() => {});
           }
         });
       }
@@ -119,7 +124,11 @@ export class PeerConnectionManager {
       this.callbacks.onConnectionStateChange(remotePeerId, pc!.connectionState);
       if (pc!.connectionState === 'failed') {
         // Attempt ICE restart
-        pc!.restartIce();
+        try {
+          pc!.restartIce();
+        } catch (e) {
+          console.warn('ICE restart attempt failed:', e);
+        }
       }
     };
 
@@ -203,13 +212,6 @@ export class PeerConnectionManager {
 
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
 
-        // Flush any queued candidates
-        const queued = this.candidateQueues.get(fromPeerId) || [];
-        this.candidateQueues.set(fromPeerId, []);
-        for (const cand of queued) {
-          await pc.addIceCandidate(new RTCIceCandidate(cand));
-        }
-
         if (type === 'offer') {
           await pc.setLocalDescription();
           this.callbacks.sendSignal({
@@ -220,6 +222,17 @@ export class PeerConnectionManager {
             sdp: pc.localDescription ?? undefined,
           });
         }
+
+        // Flush queued candidates after remote description is set
+        const queued = this.candidateQueues.get(fromPeerId) || [];
+        this.candidateQueues.set(fromPeerId, []);
+        for (const cand of queued) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(cand));
+          } catch (e) {
+            console.warn('Failed to add queued ice candidate:', e);
+          }
+        }
       } else if (type === 'candidate') {
         if (!candidate) return;
 
@@ -227,7 +240,11 @@ export class PeerConnectionManager {
         if (isIgnored) return;
 
         if (pc.remoteDescription && pc.remoteDescription.type) {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          } catch (e) {
+            console.warn('Failed to add incoming ice candidate:', e);
+          }
         } else {
           // Queue candidate until remote description arrives
           const queue = this.candidateQueues.get(fromPeerId) || [];
@@ -246,8 +263,12 @@ export class PeerConnectionManager {
 
     for (const channel of this.dataChannels.values()) {
       if (channel.readyState === 'open') {
-        channel.send(payload);
-        sentCount++;
+        try {
+          channel.send(payload);
+          sentCount++;
+        } catch (e) {
+          console.error('Failed to send data channel message:', e);
+        }
       }
     }
 

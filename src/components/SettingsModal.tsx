@@ -180,6 +180,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <label className="text-xs text-slate-300 block mb-1">Project URL</label>
                 <input
                   type="url"
+                  autoComplete="off"
                   placeholder="https://your-project.supabase.co"
                   value={supabaseUrl}
                   onChange={(e) => setSupabaseUrl(e.target.value)}
@@ -191,6 +192,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <label className="text-xs text-slate-300 block mb-1">Anon Public Key</label>
                 <input
                   type="password"
+                  autoComplete="new-password"
                   placeholder="eyJhbGciOi..."
                   value={supabaseAnonKey}
                   onChange={(e) => setSupabaseAnonKey(e.target.value)}

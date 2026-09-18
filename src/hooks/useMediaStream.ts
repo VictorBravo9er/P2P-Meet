@@ -33,12 +33,19 @@ export function useMediaStream(): UseMediaStreamResult {
   const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState<string>('');
   const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>('');
 
+  const localStreamRef = useRef<MediaStream | null>(null);
   const originalCameraTrackRef = useRef<MediaStreamTrack | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
+  const isSpeakingRef = useRef<boolean>(false);
 
-  // Enumerate devices
+  // Keep localStreamRef always synced with latest state
+  useEffect(() => {
+    localStreamRef.current = localStream;
+  }, [localStream]);
+
+  // Enumerate devices helper
   const updateDevices = useCallback(async () => {
     try {
       if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -48,19 +55,12 @@ export function useMediaStream(): UseMediaStreamResult {
 
       setAudioInputDevices(audioInputs);
       setVideoInputDevices(videoInputs);
-
-      if (audioInputs.length > 0 && !selectedAudioDeviceId) {
-        setSelectedAudioDeviceId(audioInputs[0].deviceId);
-      }
-      if (videoInputs.length > 0 && !selectedVideoDeviceId) {
-        setSelectedVideoDeviceId(videoInputs[0].deviceId);
-      }
     } catch (err) {
       console.error('Error enumerating devices:', err);
     }
-  }, [selectedAudioDeviceId, selectedVideoDeviceId]);
+  }, []);
 
-  // Speaking level detector using Web Audio AnalyserNode
+  // Speaking level detector using Web Audio AnalyserNode (throttled)
   const setupAudioMonitor = useCallback((stream: MediaStream) => {
     const audioTrack = stream.getAudioTracks()[0];
     if (!audioTrack) return;
@@ -69,11 +69,15 @@ export function useMediaStream(): UseMediaStreamResult {
       if (audioContextRef.current) {
         audioContextRef.current.close().catch(() => {});
       }
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+      }
 
-      const audioCtx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+      const audioCtx = new (window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
-      analyser.smoothingTimeConstant = 0.5;
+      analyser.smoothingTimeConstant = 0.4;
 
       const source = audioCtx.createMediaStreamSource(new MediaStream([audioTrack]));
       source.connect(analyser);
@@ -85,7 +89,10 @@ export function useMediaStream(): UseMediaStreamResult {
 
       const checkVolume = () => {
         if (!analyserRef.current || audioTrack.muted || !audioTrack.enabled) {
-          setIsSpeaking(false);
+          if (isSpeakingRef.current) {
+            isSpeakingRef.current = false;
+            setIsSpeaking(false);
+          }
           animFrameRef.current = requestAnimationFrame(checkVolume);
           return;
         }
@@ -98,7 +105,12 @@ export function useMediaStream(): UseMediaStreamResult {
         const average = sum / dataArray.length;
 
         // Threshold for speaking detection
-        setIsSpeaking(average > 15);
+        const nowSpeaking = average > 14;
+        if (nowSpeaking !== isSpeakingRef.current) {
+          isSpeakingRef.current = nowSpeaking;
+          setIsSpeaking(nowSpeaking);
+        }
+
         animFrameRef.current = requestAnimationFrame(checkVolume);
       };
 
@@ -111,18 +123,22 @@ export function useMediaStream(): UseMediaStreamResult {
   const startMedia = useCallback(async (): Promise<MediaStream | null> => {
     try {
       setError(null);
-      const constraints: MediaStreamConstraints = {
-        audio: selectedAudioDeviceId ? { deviceId: { exact: selectedAudioDeviceId } } : true,
-        video: selectedVideoDeviceId
-          ? {
-              deviceId: { exact: selectedVideoDeviceId },
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-            }
-          : { width: { ideal: 1280 }, height: { ideal: 720 } },
-      };
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      // Avoid exact constraints which throw OverconstrainedError in many browsers
+      const audioConstraint: boolean | MediaTrackConstraints = selectedAudioDeviceId
+        ? { deviceId: selectedAudioDeviceId }
+        : true;
+
+      const videoConstraint: boolean | MediaTrackConstraints = selectedVideoDeviceId
+        ? { deviceId: selectedVideoDeviceId, width: { ideal: 1280 }, height: { ideal: 720 } }
+        : { width: { ideal: 1280 }, height: { ideal: 720 } };
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: audioConstraint,
+        video: videoConstraint,
+      });
+
+      localStreamRef.current = stream;
       setLocalStream(stream);
 
       const videoTrack = stream.getVideoTracks()[0];
@@ -134,10 +150,11 @@ export function useMediaStream(): UseMediaStreamResult {
       await updateDevices();
       return stream;
     } catch (err: unknown) {
-      console.error('Failed to get user media:', err);
-      // Try audio-only if video fails
+      console.error('Failed to get camera/mic stream:', err);
+      // Fallback: try audio only if video fails
       try {
         const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        localStreamRef.current = audioStream;
         setLocalStream(audioStream);
         setIsVideoOff(true);
         setupAudioMonitor(audioStream);
@@ -151,10 +168,16 @@ export function useMediaStream(): UseMediaStreamResult {
     }
   }, [selectedAudioDeviceId, selectedVideoDeviceId, setupAudioMonitor, updateDevices]);
 
+  // Stop media on explicit user request
   const stopMedia = useCallback(() => {
-    if (localStream) {
-      localStream.getTracks().forEach((track) => track.stop());
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
       setLocalStream(null);
+    }
+    if (originalCameraTrackRef.current) {
+      originalCameraTrackRef.current.stop();
+      originalCameraTrackRef.current = null;
     }
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
@@ -163,80 +186,134 @@ export function useMediaStream(): UseMediaStreamResult {
       audioContextRef.current.close().catch(() => {});
       audioContextRef.current = null;
     }
-  }, [localStream]);
+  }, []);
 
+  // ONLY cleanup tracks on unmount of the entire app
+  useEffect(() => {
+    return () => {
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      if (originalCameraTrackRef.current) {
+        originalCameraTrackRef.current.stop();
+      }
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close().catch(() => {});
+      }
+    };
+  }, []);
+
+  // Toggle Microphone
   const toggleAudio = useCallback(() => {
-    if (!localStream) return;
-    const audioTrack = localStream.getAudioTracks()[0];
+    const stream = localStreamRef.current;
+    if (!stream) return;
+
+    const audioTrack = stream.getAudioTracks()[0];
     if (audioTrack) {
-      audioTrack.enabled = !audioTrack.enabled;
-      setIsAudioMuted(!audioTrack.enabled);
+      const nextState = !audioTrack.enabled;
+      audioTrack.enabled = nextState;
+      setIsAudioMuted(!nextState);
     }
-  }, [localStream]);
+  }, []);
 
+  // Toggle Camera
   const toggleVideo = useCallback(() => {
-    if (!localStream) return;
-    const videoTrack = localStream.getVideoTracks()[0];
-    if (videoTrack) {
-      videoTrack.enabled = !videoTrack.enabled;
-      setIsVideoOff(!videoTrack.enabled);
-    }
-  }, [localStream]);
+    const stream = localStreamRef.current;
+    if (!stream) return;
 
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) {
+      const nextState = !videoTrack.enabled;
+      videoTrack.enabled = nextState;
+      setIsVideoOff(!nextState);
+    }
+  }, []);
+
+  // Toggle Screen Sharing
   const toggleScreenShare = useCallback(async () => {
-    if (!localStream) return;
+    const stream = localStreamRef.current;
+    if (!stream) return;
 
     if (isScreenSharing) {
-      // Revert to camera
-      if (originalCameraTrackRef.current) {
-        const screenTrack = localStream.getVideoTracks()[0];
-        if (screenTrack) {
-          screenTrack.stop();
-          localStream.removeTrack(screenTrack);
-        }
-        localStream.addTrack(originalCameraTrackRef.current);
-        setLocalStream(new MediaStream(localStream.getTracks()));
+      // Revert from screen share to camera
+      const currentVideoTrack = stream.getVideoTracks()[0];
+      if (currentVideoTrack) {
+        currentVideoTrack.stop();
+        stream.removeTrack(currentVideoTrack);
       }
+
+      if (originalCameraTrackRef.current && originalCameraTrackRef.current.readyState !== 'ended') {
+        stream.addTrack(originalCameraTrackRef.current);
+      } else {
+        try {
+          const camStream = await navigator.mediaDevices.getUserMedia({
+            video: selectedVideoDeviceId ? { deviceId: selectedVideoDeviceId } : true,
+          });
+          const newTrack = camStream.getVideoTracks()[0];
+          if (newTrack) {
+            originalCameraTrackRef.current = newTrack;
+            stream.addTrack(newTrack);
+          }
+        } catch (err) {
+          console.error('Failed to restore camera track:', err);
+        }
+      }
+
       setIsScreenSharing(false);
+      const updatedStream = new MediaStream(stream.getTracks());
+      localStreamRef.current = updatedStream;
+      setLocalStream(updatedStream);
     } else {
+      // Start screen share
       try {
+        if (!navigator.mediaDevices?.getDisplayMedia) {
+          alert('Screen sharing is not supported by your browser.');
+          return;
+        }
+
         const displayStream = await navigator.mediaDevices.getDisplayMedia({
           video: true,
           audio: false,
         });
 
         const screenTrack = displayStream.getVideoTracks()[0];
-        const oldVideoTrack = localStream.getVideoTracks()[0];
+        if (!screenTrack) return;
 
-        if (oldVideoTrack) {
-          originalCameraTrackRef.current = oldVideoTrack;
-          localStream.removeTrack(oldVideoTrack);
+        const currentVideoTrack = stream.getVideoTracks()[0];
+        if (currentVideoTrack) {
+          originalCameraTrackRef.current = currentVideoTrack;
+          stream.removeTrack(currentVideoTrack);
         }
 
-        localStream.addTrack(screenTrack);
-        setLocalStream(new MediaStream(localStream.getTracks()));
+        stream.addTrack(screenTrack);
         setIsScreenSharing(true);
 
-        // Handle user stopping screen share via browser UI bar
+        const updatedStream = new MediaStream(stream.getTracks());
+        localStreamRef.current = updatedStream;
+        setLocalStream(updatedStream);
+
+        // Handle user clicking native browser "Stop sharing" bar
         screenTrack.onended = () => {
-          if (originalCameraTrackRef.current) {
-            localStream.removeTrack(screenTrack);
-            localStream.addTrack(originalCameraTrackRef.current);
-            setLocalStream(new MediaStream(localStream.getTracks()));
+          if (screenTrack) {
+            screenTrack.stop();
+            stream.removeTrack(screenTrack);
+          }
+          if (originalCameraTrackRef.current && originalCameraTrackRef.current.readyState !== 'ended') {
+            stream.addTrack(originalCameraTrackRef.current);
           }
           setIsScreenSharing(false);
+          const restoredStream = new MediaStream(stream.getTracks());
+          localStreamRef.current = restoredStream;
+          setLocalStream(restoredStream);
         };
       } catch (err) {
         console.warn('Screen share canceled or denied:', err);
       }
     }
-  }, [isScreenSharing, localStream]);
-
-  useEffect(() => {
-    return () => {
-      stopMedia();
-    };
-  }, [stopMedia]);
+  }, [isScreenSharing, selectedVideoDeviceId]);
 
   return {
     localStream,
