@@ -15,7 +15,25 @@ All video, audio, screen sharing, and in-meeting text chat travel **directly bet
 - **Audio Activity Meter**: Visual detection and highlighting of active speakers using Web Audio API.
 - **Dynamic Mesh Layout**: Responsive grid that automatically adjusts based on participant count or active screen shares.
 - **Lobby & Pre-Call Preview**: Check camera/mic, test audio levels, and toggle devices before entering a room.
-- **Flexible Credential Setup**: Supports both `.env` configuration and interactive runtime configuration in the browser via the Settings dialog.
+- **Interactive Settings & Audio Controls**: In-app customization for noise suppression, echo cancellation, auto-gain, camera mirroring, video resolution (480p/720p/1080p), live mic test meter, and synthesized audio chimes.
+
+---
+
+## 📚 Technical Documentation Dossier
+
+The project maintains an exhaustive, self-contained **technical dossier** in [`docs/`](./docs/INDEX.md) that thoroughly documents the application architecture, protocols, and workflows without requiring source code inspection:
+
+| Module | Document | Focus Area |
+| :--- | :--- | :--- |
+| **01** | [**Architecture Overview**](./docs/01-architecture-overview.md) | Full mesh topology, zero-server media paradigm, signaling vs. media plane, DTLS/SRTP encryption. |
+| **02** | [**WebRTC & Signaling Protocol**](./docs/02-webrtc-and-signaling.md) | W3C Perfect Negotiation, deterministic politeness, glare handling, candidate queueing, SDP recovery. |
+| **03** | [**Media Stream Pipeline**](./docs/03-media-stream-pipeline.md) | Audio/video capture, Web Audio speaking detection with GC safety, screen share swapping, video sync. |
+| **04** | [**Room Lifecycle & State**](./docs/04-room-lifecycle-and-state.md) | Presence sync, ephemeral broadcast state, safe leave detection, P2P in-call chat. |
+| **05** | [**UI Components & Layout**](./docs/05-ui-components-and-layout.md) | Component architecture, responsive dynamic grid, presenter spotlight mode. |
+| **06** | [**User Settings & Preferences**](./docs/06-settings-and-preferences.md) | Schema, localStorage persistence, live mic test meter, synthesized Web Audio chime, track constraints. |
+| **07** | [**Deployment & Environment**](./docs/07-deployment-and-environment.md) | Vite build pipeline, Vercel branch filtering (`bash-decide.sh`), Cloudflare Pages, WebRTC troubleshooting. |
+
+> **Invariant**: As mandated by [GEMINI.md](./GEMINI.md), any significant codebase changes must update the corresponding document in `docs/`.
 
 ---
 
@@ -46,8 +64,6 @@ VITE_SUPABASE_ANON_KEY=your-supabase-anon-key-here
 > 1. Open your [Supabase Dashboard](https://supabase.com/dashboard)
 > 2. Navigate to **Project Settings** -> **API**
 > 3. Copy the **Project URL** and the `anon public` key.
-> 
-> *Tip: If you don't set `.env`, you can also enter your credentials directly in the app's in-browser **Settings** dialog.*
 
 ### 3. Start the Development Server
 
