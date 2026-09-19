@@ -6,7 +6,6 @@ export const ICE_SERVERS: RTCConfiguration = {
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
   ],
-  iceCandidatePoolSize: 10,
 };
 
 export interface PeerConnectionCallbacks {
@@ -23,6 +22,7 @@ export class PeerConnectionManager {
   private candidateQueues = new Map<string, RTCIceCandidateInit[]>();
   private makingOffers = new Map<string, boolean>();
   private ignoreOffers = new Map<string, boolean>();
+  private isSettingRemoteAnswerPending = new Map<string, boolean>();
 
   private localPeerId: string;
   private localName: string;
@@ -45,20 +45,35 @@ export class PeerConnectionManager {
 
       if (stream) {
         stream.getTracks().forEach((track) => {
-          // Look for existing transceiver or sender for this track's kind
-          const transceivers = pc.getTransceivers();
-          const transceiver = transceivers.find(
-            (t) =>
-              (t.sender.track && t.sender.track.kind === track.kind) ||
-              (t.receiver.track && t.receiver.track.kind === track.kind)
-          );
+          // Find sender for this track's kind
+          const senders = pc.getSenders();
+          const sender = senders.find((s) => s.track && s.track.kind === track.kind);
 
-          if (transceiver && transceiver.sender) {
-            transceiver.sender.replaceTrack(track).catch((err) => {
-              console.error(`Failed to replace track for peer ${peerId}:`, err);
-            });
+          if (sender) {
+            if (sender.track !== track) {
+              sender.replaceTrack(track).catch((err) => {
+                console.error(`Failed to replace track for peer ${peerId}:`, err);
+              });
+            }
           } else {
-            pc.addTrack(track, stream);
+            // Check if there is a transceiver without a track of this kind
+            const transceivers = pc.getTransceivers();
+            const emptyTransceiver = transceivers.find(
+              (t) =>
+                (!t.sender.track || t.sender.track.kind === track.kind) &&
+                t.direction !== 'recvonly'
+            );
+            if (emptyTransceiver && emptyTransceiver.sender) {
+              emptyTransceiver.sender.replaceTrack(track).catch((err) => {
+                console.error(`Failed to replace track on transceiver for peer ${peerId}:`, err);
+              });
+            } else {
+              try {
+                pc.addTrack(track, stream);
+              } catch (e) {
+                console.warn(`Could not add track for peer ${peerId}:`, e);
+              }
+            }
           }
         });
       } else if (prevStream) {
@@ -82,6 +97,7 @@ export class PeerConnectionManager {
     this.peerConnections.set(remotePeerId, pc);
     this.makingOffers.set(remotePeerId, false);
     this.ignoreOffers.set(remotePeerId, false);
+    this.isSettingRemoteAnswerPending.set(remotePeerId, false);
     this.candidateQueues.set(remotePeerId, []);
 
     // Deterministic politeness: peer with lexicographically lower ID is polite
@@ -90,20 +106,38 @@ export class PeerConnectionManager {
     // Attach local stream tracks
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => {
-        pc!.addTrack(track, this.localStream!);
+        try {
+          pc!.addTrack(track, this.localStream!);
+        } catch (e) {
+          console.warn('Error adding initial track to peer connection:', e);
+        }
       });
     }
 
-    // Initialize remote stream container
-    const remoteStream = new MediaStream();
-    this.remoteStreams.set(remotePeerId, remoteStream);
+    // Initialize or reuse remote stream container
+    let remoteStream = this.remoteStreams.get(remotePeerId);
+    if (!remoteStream) {
+      remoteStream = new MediaStream();
+      this.remoteStreams.set(remotePeerId, remoteStream);
+    }
 
-    // Track handler
+    // Track handler: handles audio & video tracks arriving from peer
     pc.ontrack = (event) => {
-      if (event.track) {
-        remoteStream.addTrack(event.track);
-        this.callbacks.onRemoteStream(remotePeerId, remoteStream);
+      let stream = event.streams && event.streams[0];
+      if (!stream) {
+        let existing = this.remoteStreams.get(remotePeerId);
+        if (!existing) {
+          existing = new MediaStream();
+          this.remoteStreams.set(remotePeerId, existing);
+        }
+        if (!existing.getTracks().some((t) => t.id === event.track.id)) {
+          existing.addTrack(event.track);
+        }
+        stream = existing;
+      } else {
+        this.remoteStreams.set(remotePeerId, stream);
       }
+      this.callbacks.onRemoteStream(remotePeerId, stream);
     };
 
     // ICE Candidate handler
@@ -187,63 +221,95 @@ export class PeerConnectionManager {
     const { fromPeerId, type, sdp, candidate } = signal;
     if (fromPeerId === this.localPeerId) return;
 
-    const pc = this.getOrCreatePeerConnection(fromPeerId);
+    let pc = this.getOrCreatePeerConnection(fromPeerId);
     const isPolite = this.localPeerId < fromPeerId;
 
     try {
-      if (type === 'offer' || type === 'answer') {
+      if (type === 'offer') {
         if (!sdp) return;
 
         const isMakingOffer = this.makingOffers.get(fromPeerId) || false;
-        const offerCollision = type === 'offer' && (isMakingOffer || pc.signalingState !== 'stable');
+        const isSettingRemoteAnswer = this.isSettingRemoteAnswerPending.get(fromPeerId) || false;
+        const readyForOffer = !isMakingOffer && (pc.signalingState === 'stable' || isSettingRemoteAnswer);
+        const offerCollision = !readyForOffer;
 
-        const ignore = !isPolite && offerCollision;
-        this.ignoreOffers.set(fromPeerId, ignore);
+        const ignoreOffer = !isPolite && offerCollision;
+        this.ignoreOffers.set(fromPeerId, ignoreOffer);
 
-        if (ignore) {
+        if (ignoreOffer) {
           console.warn(`[WebRTC] Glare collision: Impolite peer ${this.localPeerId} ignored offer from ${fromPeerId}`);
           return;
         }
 
-        if (offerCollision && pc.signalingState !== 'stable') {
-          // Polite peer rolls back its own offer
-          await pc.setLocalDescription({ type: 'rollback' });
+        if (offerCollision && pc.signalingState === 'have-local-offer') {
+          // Polite peer rolls back if needed
+          try {
+            await pc.setLocalDescription({ type: 'rollback' });
+          } catch (e) {
+            console.warn('Rollback warning:', e);
+          }
         }
 
-        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-
-        if (type === 'offer') {
-          await pc.setLocalDescription();
-          this.callbacks.sendSignal({
-            type: 'answer',
-            fromPeerId: this.localPeerId,
-            fromName: this.localName,
-            targetPeerId: fromPeerId,
-            sdp: pc.localDescription ?? undefined,
-          });
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        } catch (srdErr: unknown) {
+          const errMsg = srdErr instanceof Error ? srdErr.message : String(srdErr);
+          // Self-healing: if remote description failed due to m-sections or ICE restart mismatch (e.g. peer recreated PC)
+          if (errMsg.includes('m-sections') || errMsg.includes('ICE restart') || pc.connectionState === 'failed') {
+            console.warn(`[WebRTC] Incompatible offer received from ${fromPeerId}. Resetting connection:`, errMsg);
+            this.removePeer(fromPeerId);
+            pc = this.getOrCreatePeerConnection(fromPeerId);
+            await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+          } else {
+            throw srdErr;
+          }
         }
+
+        await pc.setLocalDescription();
+        this.callbacks.sendSignal({
+          type: 'answer',
+          fromPeerId: this.localPeerId,
+          fromName: this.localName,
+          targetPeerId: fromPeerId,
+          sdp: pc.localDescription ?? undefined,
+        });
 
         // Flush queued candidates after remote description is set
-        const queued = this.candidateQueues.get(fromPeerId) || [];
-        this.candidateQueues.set(fromPeerId, []);
-        for (const cand of queued) {
-          try {
-            await pc.addIceCandidate(new RTCIceCandidate(cand));
-          } catch (e) {
-            console.warn('Failed to add queued ice candidate:', e);
+        await this.flushCandidateQueue(fromPeerId, pc);
+      } else if (type === 'answer') {
+        if (!sdp) return;
+
+        this.isSettingRemoteAnswerPending.set(fromPeerId, true);
+        try {
+          if (pc.signalingState === 'have-local-offer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            // Flush queued candidates after remote description is set
+            await this.flushCandidateQueue(fromPeerId, pc);
+          } else {
+            console.warn(`[WebRTC] Ignoring answer from ${fromPeerId} in signaling state: ${pc.signalingState}`);
           }
+        } catch (srdErr: unknown) {
+          const errMsg = srdErr instanceof Error ? srdErr.message : String(srdErr);
+          if (errMsg.includes('m-sections') || errMsg.includes('ICE restart') || pc.connectionState === 'failed') {
+            console.warn(`[WebRTC] Incompatible answer from ${fromPeerId}. Resetting connection:`, errMsg);
+            this.removePeer(fromPeerId);
+          } else {
+            throw srdErr;
+          }
+        } finally {
+          this.isSettingRemoteAnswerPending.set(fromPeerId, false);
+          this.ignoreOffers.set(fromPeerId, false);
         }
       } else if (type === 'candidate') {
         if (!candidate) return;
-
-        const isIgnored = this.ignoreOffers.get(fromPeerId);
-        if (isIgnored) return;
 
         if (pc.remoteDescription && pc.remoteDescription.type) {
           try {
             await pc.addIceCandidate(new RTCIceCandidate(candidate));
           } catch (e) {
-            console.warn('Failed to add incoming ice candidate:', e);
+            if (!this.ignoreOffers.get(fromPeerId)) {
+              console.warn('Failed to add incoming ice candidate:', e);
+            }
           }
         } else {
           // Queue candidate until remote description arrives
@@ -254,6 +320,20 @@ export class PeerConnectionManager {
       }
     } catch (err) {
       console.error(`Error handling signal ${type} from ${fromPeerId}:`, err);
+    }
+  }
+
+  private async flushCandidateQueue(fromPeerId: string, pc: RTCPeerConnection) {
+    const queued = this.candidateQueues.get(fromPeerId) || [];
+    this.candidateQueues.set(fromPeerId, []);
+    for (const cand of queued) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(cand));
+      } catch (e) {
+        if (!this.ignoreOffers.get(fromPeerId)) {
+          console.warn('Failed to add queued ice candidate:', e);
+        }
+      }
     }
   }
 
@@ -292,10 +372,11 @@ export class PeerConnectionManager {
     this.candidateQueues.delete(remotePeerId);
     this.makingOffers.delete(remotePeerId);
     this.ignoreOffers.delete(remotePeerId);
+    this.isSettingRemoteAnswerPending.delete(remotePeerId);
   }
 
   public destroy() {
-    for (const remotePeerId of this.peerConnections.keys()) {
+    for (const remotePeerId of Array.from(this.peerConnections.keys())) {
       this.removePeer(remotePeerId);
     }
   }

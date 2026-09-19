@@ -3,6 +3,7 @@ import { RealtimeChannel } from '@supabase/supabase-js';
 import { getSupabaseClient } from '../services/supabase';
 import { PeerConnectionManager } from '../services/webrtc';
 import { Participant, SignalMessage, ChatMessage } from '../types/meeting';
+import { getStoredUserSettings, playNotificationChime } from '../services/settings';
 
 interface UseMeetingRoomOptions {
   roomId: string;
@@ -73,13 +74,21 @@ export function useMeetingRoom({
   }, []);
 
   // Incoming chat message
-  const handleChatMessage = useCallback((message: ChatMessage) => {
-    setChatMessages((prev) => {
-      // Avoid duplicates
-      if (prev.some((m) => m.id === message.id)) return prev;
-      return [...prev, message];
-    });
-  }, []);
+  const handleChatMessage = useCallback(
+    (message: ChatMessage) => {
+      const userSettings = getStoredUserSettings();
+      if (userSettings.chatSoundNotification && message.senderId !== localPeerId) {
+        playNotificationChime();
+      }
+
+      setChatMessages((prev) => {
+        // Avoid duplicates
+        if (prev.some((m) => m.id === message.id)) return prev;
+        return [...prev, message];
+      });
+    },
+    [localPeerId]
+  );
 
   // Send a chat message (tries WebRTC DataChannel first, mirrors with broadcast)
   const sendChat = useCallback(
@@ -203,11 +212,18 @@ export function useMeetingRoom({
       }
 
       setParticipants((prev) => {
-        // Retain existing streams if peer was already connected
+        // Retain existing streams and active mute/video states if peer was already connected
         return activePeers.map((newP) => {
           const existing = prev.find((p) => p.id === newP.id);
           return existing
-            ? { ...newP, stream: existing.stream, connectionState: existing.connectionState }
+            ? {
+                ...newP,
+                isAudioMuted: existing.isAudioMuted,
+                isVideoOff: existing.isVideoOff,
+                isScreenSharing: existing.isScreenSharing,
+                stream: existing.stream,
+                connectionState: existing.connectionState,
+              }
             : newP;
         });
       });
@@ -224,7 +240,8 @@ export function useMeetingRoom({
       }) || { name: 'Guest' };
 
       setParticipants((prev) => {
-        if (prev.some((p) => p.id === key)) return prev;
+        const existing = prev.find((p) => p.id === key);
+        if (existing) return prev;
         return [
           ...prev,
           {
@@ -240,10 +257,26 @@ export function useMeetingRoom({
 
       // Initiate WebRTC peer connection
       rtcManager.getOrCreatePeerConnection(key);
+
+      // Announce our current state to the newly joined peer
+      sendSignal({
+        type: 'state-sync',
+        fromPeerId: localPeerId,
+        fromName: userName,
+        targetPeerId: key,
+        state: { isAudioMuted, isVideoOff, isScreenSharing },
+      });
     });
 
     channel.on('presence', { event: 'leave' }, ({ key }) => {
       if (key === localPeerId) return;
+
+      // Only remove if this peer is actually gone from presence state
+      const presenceState = channel.presenceState();
+      const stillPresent = presenceState[key] && presenceState[key].length > 0;
+      if (stillPresent) {
+        return;
+      }
 
       rtcManager.removePeer(key);
       setParticipants((prev) => prev.filter((p) => p.id !== key));
@@ -280,17 +313,9 @@ export function useMeetingRoom({
     }
   }, [localStream]);
 
-  // Sync state changes (mute, video, screen share) to peers
+  // Sync state changes (mute, video, screen share) to peers via lightweight broadcast
   useEffect(() => {
     if (channelRef.current && connectionStatus === 'connected') {
-      channelRef.current.track({
-        name: userName,
-        isAudioMuted,
-        isVideoOff,
-        isScreenSharing,
-      });
-
-      // Also broadcast state sync for instant UI update
       sendSignal({
         type: 'state-sync',
         fromPeerId: localPeerId,
