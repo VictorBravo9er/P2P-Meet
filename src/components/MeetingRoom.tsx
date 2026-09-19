@@ -12,6 +12,7 @@ interface MeetingRoomProps {
   userName: string;
   localPeerId: string;
   localStream: MediaStream | null;
+  localScreenStream: MediaStream | null;
   isAudioMuted: boolean;
   isVideoOff: boolean;
   isScreenSharing: boolean;
@@ -38,6 +39,7 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({
   userName,
   localPeerId,
   localStream,
+  localScreenStream,
   isAudioMuted,
   isVideoOff,
   isScreenSharing,
@@ -96,6 +98,7 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({
     isScreenSharing,
     isLocal: true,
     stream: localStream ?? undefined,
+    screenStream: localScreenStream ?? undefined,
     isSpeaking,
     connectionState: 'connected',
   };
@@ -210,33 +213,31 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({
                   </div>
 
                   {/* Toggle button to hide/show participant strip */}
-                  {allParticipants.length > 1 && (
-                    <button
-                      onClick={() => setIsParticipantStripVisible((prev) => !prev)}
-                      className={`px-3 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-2 transition ${
-                        !isParticipantStripVisible
-                          ? 'bg-primary-600/30 text-primary-300 border-primary-500/50 hover:bg-primary-600/40'
-                          : 'bg-slate-800/80 text-slate-300 hover:text-white border-slate-700/60 hover:bg-slate-700'
-                      }`}
-                      title={
-                        isParticipantStripVisible
-                          ? 'Hide participant tiles so only screen cast is visible'
-                          : 'Show participant tiles'
-                      }
-                    >
-                      {isParticipantStripVisible ? (
-                        <>
-                          <EyeOff className="w-3.5 h-3.5" />
-                          <span>Hide Participants</span>
-                        </>
-                      ) : (
-                        <>
-                          <Eye className="w-3.5 h-3.5 text-primary-400" />
-                          <span>Show Participants ({allParticipants.length - 1})</span>
-                        </>
-                      )}
-                    </button>
-                  )}
+                  <button
+                    onClick={() => setIsParticipantStripVisible((prev) => !prev)}
+                    className={`px-3 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-2 transition ${
+                      !isParticipantStripVisible
+                        ? 'bg-primary-600/30 text-primary-300 border-primary-500/50 hover:bg-primary-600/40'
+                        : 'bg-slate-800/80 text-slate-300 hover:text-white border-slate-700/60 hover:bg-slate-700'
+                    }`}
+                    title={
+                      isParticipantStripVisible
+                        ? 'Hide participant tiles so only screen cast is visible'
+                        : 'Show participant tiles'
+                    }
+                  >
+                    {isParticipantStripVisible ? (
+                      <>
+                        <EyeOff className="w-3.5 h-3.5" />
+                        <span>Hide Participants</span>
+                      </>
+                    ) : (
+                      <>
+                        <Eye className="w-3.5 h-3.5 text-primary-400" />
+                        <span>Show Participants ({allParticipants.length})</span>
+                      </>
+                    )}
+                  </button>
                 </div>
 
                 {/* Stage + Strip Container */}
@@ -244,29 +245,35 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({
                   {/* Screen Cast Video Stage */}
                   <div
                     className={`transition-all duration-300 flex items-center justify-center w-full ${
-                      isParticipantStripVisible && allParticipants.length > 1
+                      isParticipantStripVisible
                         ? 'lg:flex-1 h-[55vh] sm:h-[65vh] lg:h-[75vh]'
                         : 'w-full h-[65vh] sm:h-[75vh] lg:h-[80vh]'
                     }`}
                   >
                     <div className="w-full h-full flex items-center justify-center">
-                      <VideoTile participant={screenSharer} isSelf={screenSharer.isLocal} />
+                      <VideoTile
+                        participant={screenSharer}
+                        isSelf={screenSharer.isLocal}
+                        isScreenShareTile={true}
+                      />
                     </div>
                   </div>
 
-                  {/* Participant Side Strip (Hidable) */}
-                  {isParticipantStripVisible && allParticipants.length > 1 && (
+                  {/* Participant Side Strip (Hidable - Displays everyone's camera feed) */}
+                  {isParticipantStripVisible && (
                     <div className="w-full lg:w-72 xl:w-80 flex lg:flex-col gap-3 overflow-x-auto lg:overflow-y-auto max-h-[22vh] lg:max-h-[75vh] flex-shrink-0 p-1">
-                      {allParticipants
-                        .filter((p) => p.id !== screenSharer.id)
-                        .map((p) => (
-                          <div
-                            key={p.id}
-                            className="w-48 lg:w-full aspect-video flex-shrink-0"
-                          >
-                            <VideoTile participant={p} isSelf={p.isLocal} />
-                          </div>
-                        ))}
+                      {allParticipants.map((p) => (
+                        <div
+                          key={`cam_${p.id}`}
+                          className="w-48 lg:w-full aspect-video flex-shrink-0"
+                        >
+                          <VideoTile
+                            participant={p}
+                            isSelf={p.isLocal}
+                            isScreenShareTile={false}
+                          />
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>

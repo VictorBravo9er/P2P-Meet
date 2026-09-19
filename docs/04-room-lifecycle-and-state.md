@@ -22,13 +22,18 @@ export interface Participant {
   isVideoOff: boolean;             // Camera disabled state
   isScreenSharing: boolean;        // Active screen presentation state
   isLocal: boolean;                // True if representing the local user
-  stream?: MediaStream;            // MediaStream object (local or remote)
+  stream?: MediaStream;            // Primary camera + mic stream (local or remote)
+  screenStream?: MediaStream;      // Independent screen capture stream (local or remote)
   connectionState?: RTCPeerConnectionState; // 'new' | 'connecting' | 'connected' | 'disconnected' | 'failed' | 'closed'
   isSpeaking?: boolean;            // Active speaking activity
 }
 ```
 
-The local user is dynamically integrated into the participant list inside `MeetingRoom.tsx` as `selfParticipant` (`isLocal: true`), providing a unified interface for rendering both local and remote video tiles.
+The local user is dynamically integrated into the participant list inside `MeetingRoom.tsx` as `selfParticipant` (`isLocal: true`), binding `localStream` to `stream` and `localScreenStream` to `screenStream`.
+
+### Stream Dispatching in `useMeetingRoom`:
+- **Dual Stream Reception**: `handleRemoteStream(peerId, stream, isScreen)` updates `participant.screenStream` when `isScreen === true`, and `participant.stream` when `false`.
+- **State Continuity**: When `presence: sync` or `state-sync` runs, active `screenStream` instances are retained across peer state changes and only cleared when `isScreenSharing === false`. This prevents race conditions where signaling updates prematurely unseat live media feeds.
 
 ---
 

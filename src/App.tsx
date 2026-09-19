@@ -27,6 +27,7 @@ export function App() {
   // Media streams hook
   const {
     localStream,
+    localScreenStream,
     isAudioMuted,
     isVideoOff,
     isScreenSharing,
@@ -60,6 +61,7 @@ export function App() {
     roomId: inMeeting ? roomId : '',
     userName,
     localStream,
+    localScreenStream,
     isAudioMuted,
     isVideoOff,
     isScreenSharing,
@@ -117,6 +119,7 @@ export function App() {
           userName={userName}
           localPeerId={localPeerId}
           localStream={localStream}
+          localScreenStream={localScreenStream}
           isAudioMuted={isAudioMuted}
           isVideoOff={isVideoOff}
           isScreenSharing={isScreenSharing}

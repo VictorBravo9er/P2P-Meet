@@ -48,26 +48,29 @@ The UI architecture is modular, separating pre-call preparation from in-call int
      - 2 participants: 2-column side-by-side (`md:grid-cols-2 max-w-5xl`)
      - 3 to 4 participants: 2x2 grid (`sm:grid-cols-2 max-w-5xl`)
      - 5+ participants: 3-column grid (`lg:grid-cols-3 max-w-7xl`)
-  2. **Screen Share / Presenter Spotlight Layout with Focus Mode**:
-     - **Main Stage**: Centered presentation container for the shared screen.
-     - **Hidable Participant Strip**: Attendees' video tiles are rendered in a responsive strip (`w-48 lg:w-full aspect-video flex-shrink-0`) keeping perfect 16:9 proportions.
+  2. **Screen Share / Presenter Spotlight Layout with Focus Mode & Dual Video**:
+     - **Main Stage**: Centered presentation container for the shared screen rendered with `isScreenShareTile={true}`.
+     - **Dual Video Display for Presenter**: The presenter's screen cast is spotlighted on the main stage, while their camera feed simultaneously continues rendering in the participant filmstrip (`isScreenShareTile={false}`). Attendees can view the presenter's face and screen share concurrently.
+     - **Hidable Participant Strip**: Attendees' and presenter's webcam tiles are rendered in a responsive strip (`w-48 lg:w-full aspect-video flex-shrink-0`) keeping perfect 16:9 proportions.
      - **Focus Mode Toggle**: Users can toggle between showing participant video tiles and **Focus Mode** (`isParticipantStripVisible: false`). In Focus Mode, the participant strip is collapsed completely and the screen cast expands to full available width and height (`w-full h-[80vh]`), rendering exclusively the presentation with zero distractions.
      - **Restore Pill**: When hidden, a subtle button shows *"Show Participants (N)"* to unhide the video strip at any time.
 
 ---
 
 ### 2.4 `VideoTile.tsx` (Media Renderer)
-- **Video Element**: Renders `participant.stream` with `autoPlay` and `playsInline`.
+- **Decoupled Screen vs. Camera Rendering (`isScreenShareTile`)**:
+  - `isScreenShareTile={true}` (Stage Tile): Renders `participant.screenStream` (or fallback `participant.stream`). Completely ignores `isVideoOff` so presenter camera toggles never hide the screen cast. Renders the interactive presentation toolbar (Fit/Fill, PiP, Fullscreen).
+  - `isScreenShareTile={false}` (Participant / Strip Tile): Renders `participant.stream` (webcam). Respects `isVideoOff` and falls back to avatar placeholder when camera is muted.
 - **Aspect Ratio Preservation**:
   - Eliminates rigid minimum height (`min-h-0`) so containers conform strictly to aspect-ratio wrappers without distortion.
-  - **Screen Cast Containment**: Automatically switches `<video>` styling to `object-contain` against a deep black backdrop (`bg-slate-950`) when `participant.isScreenSharing` is active. This guarantees slides, code, spreadsheets, and windows of any aspect ratio (16:9, 16:10, 4:3, 21:9) are displayed without any cropped edges or clipped content.
+  - **Screen Cast Containment**: Automatically switches `<video>` styling to `object-contain` against a deep black backdrop (`bg-slate-950`) when `isScreenShareTile` is true. This guarantees slides, code, spreadsheets, and windows of any aspect ratio (16:9, 16:10, 4:3, 21:9) are displayed without any cropped edges or clipped content.
   - **Camera Feeds**: Default to `object-cover` within 16:9 tiles for clean edge-to-edge webcam presentation.
 - **Interactive Presentation Toolbar**: When viewing a screen share, provides an integrated overlay:
   - **Fit / Fill Toggle (`Scan`)**: Switch between `object-contain` (Fit to screen, no clipping) and `object-cover` (Fill screen).
   - **Picture-in-Picture (`PictureInPicture`)**: Pop out the video stream into native OS floating window.
   - **Fullscreen (`Maximize` / `Minimize`)**: Enters native monitor fullscreen using the Fullscreen API.
 - **Audio Feedback Safeguard**: Always mutes local audio (`muted={isSelf}`) to prevent acoustic feedback loops, while keeping remote audio unmuted.
-- **Avatar Fallback**: When `isVideoOff: true` or no video tracks are active, renders a modern circular avatar using the participant's initials or user icon.
+- **Avatar Fallback**: When `isVideoOff: true` or no video tracks are active on a camera tile, renders a modern circular avatar using the participant's initials or user icon.
 - **Active Speaker Glow**: When `participant.isSpeaking` is true and `speakingIndicator` is enabled in settings, wraps the tile with an animated emerald ring (`ring-4 ring-emerald-500/40`).
 - **Status Badges**:
   - `Presenting` / `You are presenting`: Indicates active screen share.

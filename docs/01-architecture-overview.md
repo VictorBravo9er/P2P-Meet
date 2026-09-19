@@ -76,10 +76,11 @@ A fundamental concept of the architecture is the strict separation between the *
 ### 3.2 The Media Plane (WebRTC)
 - **Transport**: Direct UDP (with TCP fallback via ICE).
 - **Security**: DTLS 1.2 (Datagram Transport Layer Security) with SRTP (Secure Real-time Transport Protocol).
-- **Payloads**:
-  - **Audio**: Compressed using the Opus codec, negotiated via SDP.
-  - **Video**: Compressed using VP8 or H.264, dynamically adapted based on network bandwidth and resolution constraints.
-  - **Chat**: P2P text payloads transferred over WebRTC `RTCDataChannel` using SCTP.
+- **Payloads & QoS Prioritization**:
+  - **Audio (Mic & Screen Audio)**: Compressed using Opus (SRTP). Highest network priority (`high`, DSCP Expedited Forwarding / EF 46) to eliminate voice dropouts.
+  - **Screen Share Video**: High-fidelity display capture (SRTP, `contentHint: 'detail'`). Medium priority (`medium`, DSCP AF41) with `maintain-resolution` degradation preference.
+  - **Camera Video**: Webcam video (VP8/H.264, SRTP). Best effort priority (`low`, DSCP 0) with `balanced` degradation, throttled to 350 kbps during active screen share to protect upload bandwidth headroom in full mesh.
+  - **Chat**: P2P text payloads transferred over WebRTC `RTCDataChannel` using SCTP over DTLS.
 
 ---
 
