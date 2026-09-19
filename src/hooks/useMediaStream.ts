@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { getStoredUserSettings, UserSettings } from '../services/settings';
 
 export interface UseMediaStreamResult {
   localStream: MediaStream | null;
@@ -36,6 +37,7 @@ export function useMediaStream(): UseMediaStreamResult {
   const localStreamRef = useRef<MediaStream | null>(null);
   const originalCameraTrackRef = useRef<MediaStreamTrack | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const isSpeakingRef = useRef<boolean>(false);
@@ -66,6 +68,10 @@ export function useMediaStream(): UseMediaStreamResult {
     if (!audioTrack) return;
 
     try {
+      if (audioSourceRef.current) {
+        audioSourceRef.current.disconnect();
+        audioSourceRef.current = null;
+      }
       if (audioContextRef.current) {
         audioContextRef.current.close().catch(() => {});
       }
@@ -82,8 +88,22 @@ export function useMediaStream(): UseMediaStreamResult {
       const source = audioCtx.createMediaStreamSource(new MediaStream([audioTrack]));
       source.connect(analyser);
 
+      // Store source in ref to prevent V8/SpiderMonkey garbage collection from terminating audio
+      audioSourceRef.current = source;
       audioContextRef.current = audioCtx;
       analyserRef.current = analyser;
+
+      if (audioCtx.state === 'suspended') {
+        const resumeAudio = () => {
+          if (audioCtx.state === 'suspended') {
+            audioCtx.resume().catch(() => {});
+          }
+          window.removeEventListener('click', resumeAudio);
+          window.removeEventListener('keydown', resumeAudio);
+        };
+        window.addEventListener('click', resumeAudio);
+        window.addEventListener('keydown', resumeAudio);
+      }
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
@@ -124,14 +144,30 @@ export function useMediaStream(): UseMediaStreamResult {
     try {
       setError(null);
 
-      // Avoid exact constraints which throw OverconstrainedError in many browsers
+      const userSettings = getStoredUserSettings();
+      const resolutionMap = {
+        '480p': { width: { ideal: 640 }, height: { ideal: 480 } },
+        '720p': { width: { ideal: 1280 }, height: { ideal: 720 } },
+        '1080p': { width: { ideal: 1920 }, height: { ideal: 1080 } },
+      };
+      const resConstraint = resolutionMap[userSettings.videoResolution] || resolutionMap['720p'];
+
       const audioConstraint: boolean | MediaTrackConstraints = selectedAudioDeviceId
-        ? { deviceId: selectedAudioDeviceId }
-        : true;
+        ? {
+            deviceId: selectedAudioDeviceId,
+            echoCancellation: userSettings.echoCancellation,
+            noiseSuppression: userSettings.noiseSuppression,
+            autoGainControl: userSettings.autoGainControl,
+          }
+        : {
+            echoCancellation: userSettings.echoCancellation,
+            noiseSuppression: userSettings.noiseSuppression,
+            autoGainControl: userSettings.autoGainControl,
+          };
 
       const videoConstraint: boolean | MediaTrackConstraints = selectedVideoDeviceId
-        ? { deviceId: selectedVideoDeviceId, width: { ideal: 1280 }, height: { ideal: 720 } }
-        : { width: { ideal: 1280 }, height: { ideal: 720 } };
+        ? { deviceId: selectedVideoDeviceId, ...resConstraint }
+        : resConstraint;
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: audioConstraint,
@@ -153,7 +189,13 @@ export function useMediaStream(): UseMediaStreamResult {
       console.error('Failed to get camera/mic stream:', err);
       // Fallback: try audio only if video fails
       try {
-        const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
         localStreamRef.current = audioStream;
         setLocalStream(audioStream);
         setIsVideoOff(true);
@@ -182,6 +224,10 @@ export function useMediaStream(): UseMediaStreamResult {
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
     }
+    if (audioSourceRef.current) {
+      audioSourceRef.current.disconnect();
+      audioSourceRef.current = null;
+    }
     if (audioContextRef.current) {
       audioContextRef.current.close().catch(() => {});
       audioContextRef.current = null;
@@ -200,11 +246,55 @@ export function useMediaStream(): UseMediaStreamResult {
       if (animFrameRef.current) {
         cancelAnimationFrame(animFrameRef.current);
       }
+      if (audioSourceRef.current) {
+        audioSourceRef.current.disconnect();
+      }
       if (audioContextRef.current) {
         audioContextRef.current.close().catch(() => {});
       }
     };
   }, []);
+
+  // Dynamically update media track constraints when user settings change
+  useEffect(() => {
+    const handleSettingsChanged = (e: Event) => {
+      const customEvent = e as CustomEvent<UserSettings>;
+      const newSettings = customEvent.detail;
+      if (!newSettings) return;
+
+      const stream = localStreamRef.current;
+      if (!stream) return;
+
+      // Update audio constraints on live track if supported
+      const audioTrack = stream.getAudioTracks()[0];
+      if (audioTrack && audioTrack.applyConstraints) {
+        audioTrack
+          .applyConstraints({
+            echoCancellation: newSettings.echoCancellation,
+            noiseSuppression: newSettings.noiseSuppression,
+            autoGainControl: newSettings.autoGainControl,
+          })
+          .catch(() => {});
+      }
+
+      // Update video constraints on live track if supported
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack && videoTrack.applyConstraints && !isScreenSharing) {
+        const resolutionMap = {
+          '480p': { width: { ideal: 640 }, height: { ideal: 480 } },
+          '720p': { width: { ideal: 1280 }, height: { ideal: 720 } },
+          '1080p': { width: { ideal: 1920 }, height: { ideal: 1080 } },
+        };
+        const resConstraint = resolutionMap[newSettings.videoResolution] || resolutionMap['720p'];
+        videoTrack.applyConstraints(resConstraint).catch(() => {});
+      }
+    };
+
+    window.addEventListener('p2p_settings_changed', handleSettingsChanged);
+    return () => {
+      window.removeEventListener('p2p_settings_changed', handleSettingsChanged);
+    };
+  }, [isScreenSharing]);
 
   // Toggle Microphone
   const toggleAudio = useCallback(() => {

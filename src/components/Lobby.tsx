@@ -7,10 +7,9 @@ import {
   Sparkles,
   Settings,
   ShieldCheck,
-  AlertCircle,
   ArrowRight,
 } from 'lucide-react';
-import { getStoredSupabaseConfig } from '../services/supabase';
+import { getStoredUserSettings, UserSettings } from '../services/settings';
 
 interface LobbyProps {
   localStream: MediaStream | null;
@@ -39,7 +38,7 @@ export const Lobby: React.FC<LobbyProps> = ({
     return localStorage.getItem('p2p_meeting_username') || `User_${Math.floor(100 + Math.random() * 900)}`;
   });
   const [roomId, setRoomId] = useState(initialRoomId);
-  const [isConfigured, setIsConfigured] = useState(false);
+  const [mirrorSelfVideo, setMirrorSelfVideo] = useState(() => getStoredUserSettings().mirrorSelfVideo);
   const previewVideoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -55,8 +54,16 @@ export const Lobby: React.FC<LobbyProps> = ({
   }, [localStream]);
 
   useEffect(() => {
-    const config = getStoredSupabaseConfig();
-    setIsConfigured(!!config);
+    const handleSettingsChanged = (e: Event) => {
+      const customEvent = e as CustomEvent<UserSettings>;
+      if (customEvent.detail) {
+        setMirrorSelfVideo(customEvent.detail.mirrorSelfVideo);
+      }
+    };
+    window.addEventListener('p2p_settings_changed', handleSettingsChanged);
+    return () => {
+      window.removeEventListener('p2p_settings_changed', handleSettingsChanged);
+    };
   }, []);
 
   const handleCreateRandomRoom = () => {
@@ -98,20 +105,10 @@ export const Lobby: React.FC<LobbyProps> = ({
         </div>
 
         <div className="flex items-center gap-3">
-          {isConfigured ? (
-            <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs">
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span>Signaling Ready</span>
-            </div>
-          ) : (
-            <button
-              onClick={onOpenSettings}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30 text-xs hover:bg-amber-500/20 transition"
-            >
-              <AlertCircle className="w-3.5 h-3.5" />
-              <span>Configure Supabase</span>
-            </button>
-          )}
+          <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs">
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span>Direct P2P Encrypted</span>
+          </div>
 
           <button
             onClick={onOpenSettings}
@@ -139,7 +136,9 @@ export const Lobby: React.FC<LobbyProps> = ({
               autoPlay
               playsInline
               muted // Always mute self preview
-              className={`w-full h-full object-cover scale-x-[-1] transition-opacity duration-300 ${
+              className={`w-full h-full object-cover ${
+                mirrorSelfVideo ? 'scale-x-[-1]' : ''
+              } transition-opacity duration-300 ${
                 hasVideoTrack ? 'opacity-100' : 'opacity-0'
               }`}
             />

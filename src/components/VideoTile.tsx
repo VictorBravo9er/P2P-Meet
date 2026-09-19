@@ -1,6 +1,7 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { MicOff, Monitor, User } from 'lucide-react';
 import { Participant } from '../types/meeting';
+import { getStoredUserSettings, UserSettings } from '../services/settings';
 
 interface VideoTileProps {
   participant: Participant;
@@ -9,27 +10,67 @@ interface VideoTileProps {
 
 export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = false }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [trackRevision, setTrackRevision] = useState(0);
+  const [userSettings, setUserSettings] = useState<UserSettings>(getStoredUserSettings);
 
   useEffect(() => {
-    if (videoRef.current) {
-      if (participant.stream) {
-        videoRef.current.srcObject = participant.stream;
-      } else {
-        videoRef.current.srcObject = null;
+    const handleSettingsChanged = (e: Event) => {
+      const customEvent = e as CustomEvent<UserSettings>;
+      if (customEvent.detail) {
+        setUserSettings(customEvent.detail);
       }
+    };
+    window.addEventListener('p2p_settings_changed', handleSettingsChanged);
+    return () => {
+      window.removeEventListener('p2p_settings_changed', handleSettingsChanged);
+    };
+  }, []);
+
+  useEffect(() => {
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
+
+    if (participant.stream) {
+      if (videoEl.srcObject !== participant.stream) {
+        videoEl.srcObject = participant.stream;
+      }
+      videoEl.play().catch((err) => {
+        // Autoplay may be restricted until user interaction
+        console.warn(`[VideoTile] Playback deferred for ${participant.name}:`, err);
+      });
+    } else {
+      videoEl.srcObject = null;
     }
+  }, [participant.stream, trackRevision, participant.name]);
+
+  // Listen for track additions / removals on the MediaStream
+  useEffect(() => {
+    const stream = participant.stream;
+    if (!stream) return;
+
+    const handleTrackChange = () => {
+      setTrackRevision((prev) => prev + 1);
+    };
+
+    stream.addEventListener('addtrack', handleTrackChange);
+    stream.addEventListener('removetrack', handleTrackChange);
+
+    return () => {
+      stream.removeEventListener('addtrack', handleTrackChange);
+      stream.removeEventListener('removetrack', handleTrackChange);
+    };
   }, [participant.stream]);
 
+  const videoTracks = participant.stream ? participant.stream.getVideoTracks() : [];
   const hasVideoTrack =
-    participant.stream &&
-    participant.stream.getVideoTracks().length > 0 &&
-    participant.stream.getVideoTracks()[0].enabled &&
+    videoTracks.length > 0 &&
+    videoTracks[0].enabled &&
     !participant.isVideoOff;
 
   return (
     <div
       className={`relative w-full h-full min-h-[220px] rounded-2xl overflow-hidden bg-surface border transition-all duration-300 flex items-center justify-center select-none shadow-lg ${
-        participant.isSpeaking
+        participant.isSpeaking && userSettings.speakingIndicator
           ? 'border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.35)]'
           : 'border-slate-800 hover:border-slate-700'
       }`}
@@ -41,7 +82,7 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = fals
         playsInline
         muted={isSelf} // Crucial: Always mute local audio to avoid audio feedback loop
         className={`w-full h-full object-cover transition-opacity duration-300 ${
-          isSelf && !participant.isScreenSharing ? 'scale-x-[-1]' : ''
+          isSelf && !participant.isScreenSharing && userSettings.mirrorSelfVideo ? 'scale-x-[-1]' : ''
         } ${hasVideoTrack ? 'opacity-100' : 'opacity-0'}`}
       />
 
