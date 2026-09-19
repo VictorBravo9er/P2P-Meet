@@ -14,16 +14,21 @@ import { getStoredUserSettings, UserSettings } from '../services/settings';
 interface VideoTileProps {
   participant: Participant;
   isSelf?: boolean;
+  isScreenShareTile?: boolean;
 }
 
-export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = false }) => {
+export const VideoTile: React.FC<VideoTileProps> = ({
+  participant,
+  isSelf = false,
+  isScreenShareTile = false,
+}) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [trackRevision, setTrackRevision] = useState(0);
   const [userSettings, setUserSettings] = useState<UserSettings>(getStoredUserSettings);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [fitMode, setFitMode] = useState<'contain' | 'cover'>(
-    participant.isScreenSharing ? 'contain' : 'cover'
+    isScreenShareTile ? 'contain' : 'cover'
   );
 
   useEffect(() => {
@@ -39,10 +44,10 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = fals
     };
   }, []);
 
-  // Sync default fitMode if screen share state changes
+  // Sync default fitMode if tile type changes
   useEffect(() => {
-    setFitMode(participant.isScreenSharing ? 'contain' : 'cover');
-  }, [participant.isScreenSharing]);
+    setFitMode(isScreenShareTile ? 'contain' : 'cover');
+  }, [isScreenShareTile]);
 
   // Track Fullscreen state
   useEffect(() => {
@@ -82,13 +87,18 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = fals
     }
   };
 
+  // Determine active media stream: for screen tile use screenStream, for camera tile use stream
+  const activeStream = isScreenShareTile
+    ? participant.screenStream || participant.stream
+    : participant.stream;
+
   useEffect(() => {
     const videoEl = videoRef.current;
     if (!videoEl) return;
 
-    if (participant.stream) {
-      if (videoEl.srcObject !== participant.stream) {
-        videoEl.srcObject = participant.stream;
+    if (activeStream) {
+      if (videoEl.srcObject !== activeStream) {
+        videoEl.srcObject = activeStream;
       }
       videoEl.play().catch((err) => {
         // Autoplay may be restricted until user interaction
@@ -97,39 +107,38 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = fals
     } else {
       videoEl.srcObject = null;
     }
-  }, [participant.stream, trackRevision, participant.name]);
+  }, [activeStream, trackRevision, participant.name]);
 
-  // Listen for track additions / removals on the MediaStream
+  // Listen for track additions / removals on the active MediaStream
   useEffect(() => {
-    const stream = participant.stream;
-    if (!stream) return;
+    if (!activeStream) return;
 
     const handleTrackChange = () => {
       setTrackRevision((prev) => prev + 1);
     };
 
-    stream.addEventListener('addtrack', handleTrackChange);
-    stream.addEventListener('removetrack', handleTrackChange);
+    activeStream.addEventListener('addtrack', handleTrackChange);
+    activeStream.addEventListener('removetrack', handleTrackChange);
 
     return () => {
-      stream.removeEventListener('addtrack', handleTrackChange);
-      stream.removeEventListener('removetrack', handleTrackChange);
+      activeStream.removeEventListener('addtrack', handleTrackChange);
+      activeStream.removeEventListener('removetrack', handleTrackChange);
     };
-  }, [participant.stream]);
+  }, [activeStream]);
 
-  const videoTracks = participant.stream ? participant.stream.getVideoTracks() : [];
-  const hasVideoTrack =
-    videoTracks.length > 0 &&
-    videoTracks[0].enabled &&
-    !participant.isVideoOff;
+  const videoTracks = activeStream ? activeStream.getVideoTracks() : [];
+  // For screen share tiles, video is active as long as the track is enabled (independent of isVideoOff camera setting)
+  const hasVideoTrack = isScreenShareTile
+    ? videoTracks.length > 0 && videoTracks[0].enabled
+    : videoTracks.length > 0 && videoTracks[0].enabled && !participant.isVideoOff;
 
   return (
     <div
       ref={containerRef}
       className={`relative w-full h-full min-h-0 rounded-2xl overflow-hidden ${
-        participant.isScreenSharing ? 'bg-slate-950' : 'bg-surface'
+        isScreenShareTile ? 'bg-slate-950' : 'bg-surface'
       } border transition-all duration-300 flex items-center justify-center select-none shadow-lg group ${
-        participant.isSpeaking && userSettings.speakingIndicator
+        !isScreenShareTile && participant.isSpeaking && userSettings.speakingIndicator
           ? 'border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.35)]'
           : 'border-slate-800 hover:border-slate-700'
       }`}
@@ -141,13 +150,13 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = fals
         playsInline
         muted={isSelf} // Crucial: Always mute local audio to avoid audio feedback loop
         className={`w-full h-full ${
-          participant.isScreenSharing
+          isScreenShareTile
             ? fitMode === 'contain'
               ? 'object-contain'
               : 'object-cover'
             : 'object-cover'
         } transition-opacity duration-300 ${
-          isSelf && !participant.isScreenSharing && userSettings.mirrorSelfVideo ? 'scale-x-[-1]' : ''
+          isSelf && !isScreenShareTile && userSettings.mirrorSelfVideo ? 'scale-x-[-1]' : ''
         } ${hasVideoTrack ? 'opacity-100' : 'opacity-0'}`}
       />
 
@@ -183,7 +192,7 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = fals
       )}
 
       {/* Screen Sharing Interactive Controls Overlay */}
-      {participant.isScreenSharing ? (
+      {isScreenShareTile && (
         <div className="absolute top-3 right-3 flex items-center gap-1.5 z-10">
           <div className="px-2.5 py-1 rounded-full text-xs font-medium bg-indigo-500/25 text-indigo-200 border border-indigo-500/40 backdrop-blur-md flex items-center gap-1.5 shadow-sm">
             <Monitor className="w-3.5 h-3.5 text-indigo-300" />
@@ -223,17 +232,17 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = fals
             {isFullscreen ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
           </button>
         </div>
-      ) : null}
+      )}
 
       {/* Bottom Info Bar: Nameplate & Status Icons */}
       <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between pointer-events-none">
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/60 backdrop-blur-md border border-white/10 text-xs font-medium text-slate-200">
-          <span>{participant.name}</span>
+          <span>{isScreenShareTile ? `${participant.name}'s Screen` : participant.name}</span>
           {isSelf && <span className="text-primary-400 font-semibold">(You)</span>}
         </div>
 
         <div className="flex items-center gap-1.5">
-          {participant.isAudioMuted && (
+          {!isScreenShareTile && participant.isAudioMuted && (
             <div className="p-1.5 rounded-lg bg-rose-500/80 text-white backdrop-blur-md shadow">
               <MicOff className="w-3.5 h-3.5" />
             </div>
