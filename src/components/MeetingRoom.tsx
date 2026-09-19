@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { ShieldCheck, Copy, Check, Users, Sparkles } from 'lucide-react';
+import { ShieldCheck, Copy, Check, Users, Sparkles, Eye, EyeOff } from 'lucide-react';
 import { Participant, ChatMessage } from '../types/meeting';
 import { VideoTile } from './VideoTile';
 import { ControlBar } from './ControlBar';
 import { ChatPanel } from './ChatPanel';
+import { ParticipantsPanel } from './ParticipantsPanel';
 import { SettingsModal } from './SettingsModal';
 
 interface MeetingRoomProps {
@@ -58,6 +59,8 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({
   onLeaveMeeting,
 }) => {
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
+  const [isParticipantStripVisible, setIsParticipantStripVisible] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [lastReadMessageCount, setLastReadMessageCount] = useState(0);
@@ -67,6 +70,10 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({
     if (!isChatOpen) {
       setLastReadMessageCount(chatMessages.length);
     }
+  };
+
+  const handleToggleParticipants = () => {
+    setIsParticipantsOpen((prev) => !prev);
   };
 
   const handleCopyLink = () => {
@@ -98,9 +105,6 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({
 
   // Dynamic grid column sizing based on peer count
   const getGridClass = () => {
-    if (screenSharer) {
-      return 'grid-cols-1 lg:grid-cols-4';
-    }
     const count = allParticipants.length;
     if (count <= 1) return 'grid-cols-1 max-w-3xl';
     if (count === 2) return 'grid-cols-1 md:grid-cols-2 max-w-5xl';
@@ -135,13 +139,40 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({
             <span>Direct P2P Encrypted</span>
           </div>
 
-          {/* Participants Count */}
-          <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-800/80 text-slate-300 text-xs border border-slate-700/60">
+          {/* Interactive Participants Badge */}
+          <button
+            onClick={handleToggleParticipants}
+            title={isParticipantsOpen ? 'Close participants panel' : 'Open participants panel'}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs border transition ${
+              isParticipantsOpen
+                ? 'bg-primary-600/30 text-primary-300 border-primary-500/50'
+                : 'bg-slate-800/80 text-slate-300 hover:text-white hover:bg-slate-700/80 border-slate-700/60'
+            }`}
+          >
             <Users className="w-3.5 h-3.5 text-primary-400" />
             <span>{allParticipants.length}</span>
-          </div>
+          </button>
         </div>
       </header>
+
+      {/* Presenter Alert Banner if Local User is Sharing Screen */}
+      {screenSharer?.isLocal && (
+        <div className="w-full bg-indigo-950/70 border-b border-indigo-800/60 px-4 py-2 flex items-center justify-between z-10 backdrop-blur-md">
+          <div className="flex items-center gap-2 text-xs text-indigo-200">
+            <span className="flex h-2 w-2 rounded-full bg-indigo-400 animate-ping" />
+            <span className="font-semibold">You are presenting your screen</span>
+            <span className="hidden sm:inline text-indigo-300/70">
+              — All peers in this room can see your screen
+            </span>
+          </div>
+          <button
+            onClick={onToggleScreenShare}
+            className="px-3 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition shadow-sm"
+          >
+            Stop Presenting
+          </button>
+        </div>
+      )}
 
       {/* Main Grid View */}
       <main className="flex-1 p-4 md:p-6 pb-28 flex items-center justify-center overflow-y-auto">
@@ -159,19 +190,85 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center">
             {screenSharer ? (
-              /* Screen share layout: Featured presenter + side strip */
-              <div className="w-full h-full max-w-7xl grid grid-cols-1 lg:grid-cols-4 gap-4 items-center">
-                <div className="lg:col-span-3 h-[60vh] lg:h-[75vh]">
-                  <VideoTile participant={screenSharer} isSelf={screenSharer.isLocal} />
+              /* Screen share layout: Featured presenter + Hidable side strip */
+              <div className="w-full h-full flex flex-col items-center justify-center gap-3">
+                {/* Screen Share Sub-Header: Focus Mode & Hidable Video Strip Toggle */}
+                <div className="w-full max-w-7xl flex items-center justify-between px-2 text-xs text-slate-400">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-slate-300">
+                      {screenSharer.isLocal ? 'Your Presentation' : `${screenSharer.name}'s Presentation`}
+                    </span>
+                    {isParticipantStripVisible && allParticipants.length > 1 ? (
+                      <span className="hidden sm:inline text-slate-500">
+                        • Showing participant video tiles
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-emerald-400 font-medium">
+                        • Focus Mode (Only screen cast visible)
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Toggle button to hide/show participant strip */}
+                  {allParticipants.length > 1 && (
+                    <button
+                      onClick={() => setIsParticipantStripVisible((prev) => !prev)}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-2 transition ${
+                        !isParticipantStripVisible
+                          ? 'bg-primary-600/30 text-primary-300 border-primary-500/50 hover:bg-primary-600/40'
+                          : 'bg-slate-800/80 text-slate-300 hover:text-white border-slate-700/60 hover:bg-slate-700'
+                      }`}
+                      title={
+                        isParticipantStripVisible
+                          ? 'Hide participant tiles so only screen cast is visible'
+                          : 'Show participant tiles'
+                      }
+                    >
+                      {isParticipantStripVisible ? (
+                        <>
+                          <EyeOff className="w-3.5 h-3.5" />
+                          <span>Hide Participants</span>
+                        </>
+                      ) : (
+                        <>
+                          <Eye className="w-3.5 h-3.5 text-primary-400" />
+                          <span>Show Participants ({allParticipants.length - 1})</span>
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
-                <div className="lg:col-span-1 flex lg:flex-col gap-3 overflow-x-auto lg:overflow-y-auto max-h-[75vh]">
-                  {allParticipants
-                    .filter((p) => p.id !== screenSharer.id)
-                    .map((p) => (
-                      <div key={p.id} className="min-w-[200px] lg:min-w-0 h-40">
-                        <VideoTile participant={p} isSelf={p.isLocal} />
-                      </div>
-                    ))}
+
+                {/* Stage + Strip Container */}
+                <div className="w-full h-full max-w-7xl flex flex-col lg:flex-row gap-4 items-center justify-center flex-1 min-h-0">
+                  {/* Screen Cast Video Stage */}
+                  <div
+                    className={`transition-all duration-300 flex items-center justify-center w-full ${
+                      isParticipantStripVisible && allParticipants.length > 1
+                        ? 'lg:flex-1 h-[55vh] sm:h-[65vh] lg:h-[75vh]'
+                        : 'w-full h-[65vh] sm:h-[75vh] lg:h-[80vh]'
+                    }`}
+                  >
+                    <div className="w-full h-full flex items-center justify-center">
+                      <VideoTile participant={screenSharer} isSelf={screenSharer.isLocal} />
+                    </div>
+                  </div>
+
+                  {/* Participant Side Strip (Hidable) */}
+                  {isParticipantStripVisible && allParticipants.length > 1 && (
+                    <div className="w-full lg:w-72 xl:w-80 flex lg:flex-col gap-3 overflow-x-auto lg:overflow-y-auto max-h-[22vh] lg:max-h-[75vh] flex-shrink-0 p-1">
+                      {allParticipants
+                        .filter((p) => p.id !== screenSharer.id)
+                        .map((p) => (
+                          <div
+                            key={p.id}
+                            className="w-48 lg:w-full aspect-video flex-shrink-0"
+                          >
+                            <VideoTile participant={p} isSelf={p.isLocal} />
+                          </div>
+                        ))}
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (
@@ -204,10 +301,13 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({
         isScreenSharing={isScreenSharing}
         isChatOpen={isChatOpen}
         unreadChatCount={unreadChatCount}
+        isParticipantsOpen={isParticipantsOpen}
+        participantCount={allParticipants.length}
         onToggleAudio={onToggleAudio}
         onToggleVideo={onToggleVideo}
         onToggleScreenShare={onToggleScreenShare}
         onToggleChat={handleToggleChat}
+        onToggleParticipants={handleToggleParticipants}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onLeaveCall={onLeaveMeeting}
       />
@@ -219,6 +319,15 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({
         currentUserId={localPeerId}
         onClose={() => setIsChatOpen(false)}
         onSendMessage={onSendMessage}
+      />
+
+      {/* In-Call P2P Participants Drawer */}
+      <ParticipantsPanel
+        isOpen={isParticipantsOpen}
+        participants={allParticipants}
+        currentUserId={localPeerId}
+        roomId={roomId}
+        onClose={() => setIsParticipantsOpen(false)}
       />
 
       {/* Settings Modal */}

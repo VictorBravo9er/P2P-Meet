@@ -1,5 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { MicOff, Monitor, User } from 'lucide-react';
+import {
+  MicOff,
+  Monitor,
+  User,
+  Maximize,
+  Minimize,
+  PictureInPicture,
+  Scan,
+} from 'lucide-react';
 import { Participant } from '../types/meeting';
 import { getStoredUserSettings, UserSettings } from '../services/settings';
 
@@ -9,9 +17,14 @@ interface VideoTileProps {
 }
 
 export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = false }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [trackRevision, setTrackRevision] = useState(0);
   const [userSettings, setUserSettings] = useState<UserSettings>(getStoredUserSettings);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fitMode, setFitMode] = useState<'contain' | 'cover'>(
+    participant.isScreenSharing ? 'contain' : 'cover'
+  );
 
   useEffect(() => {
     const handleSettingsChanged = (e: Event) => {
@@ -25,6 +38,49 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = fals
       window.removeEventListener('p2p_settings_changed', handleSettingsChanged);
     };
   }, []);
+
+  // Sync default fitMode if screen share state changes
+  useEffect(() => {
+    setFitMode(participant.isScreenSharing ? 'contain' : 'cover');
+  }, [participant.isScreenSharing]);
+
+  // Track Fullscreen state
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === containerRef.current);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
+
+  const toggleFullscreen = async () => {
+    if (!containerRef.current) return;
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await containerRef.current.requestFullscreen();
+      }
+    } catch (err) {
+      console.warn('[VideoTile] Fullscreen toggle error:', err);
+    }
+  };
+
+  const togglePiP = async () => {
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if (document.pictureInPictureEnabled) {
+        await videoEl.requestPictureInPicture();
+      }
+    } catch (err) {
+      console.warn('[VideoTile] Picture-in-picture error:', err);
+    }
+  };
 
   useEffect(() => {
     const videoEl = videoRef.current;
@@ -69,7 +125,10 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = fals
 
   return (
     <div
-      className={`relative w-full h-full min-h-[220px] rounded-2xl overflow-hidden bg-surface border transition-all duration-300 flex items-center justify-center select-none shadow-lg ${
+      ref={containerRef}
+      className={`relative w-full h-full min-h-0 rounded-2xl overflow-hidden ${
+        participant.isScreenSharing ? 'bg-slate-950' : 'bg-surface'
+      } border transition-all duration-300 flex items-center justify-center select-none shadow-lg group ${
         participant.isSpeaking && userSettings.speakingIndicator
           ? 'border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.35)]'
           : 'border-slate-800 hover:border-slate-700'
@@ -81,7 +140,13 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = fals
         autoPlay
         playsInline
         muted={isSelf} // Crucial: Always mute local audio to avoid audio feedback loop
-        className={`w-full h-full object-cover transition-opacity duration-300 ${
+        className={`w-full h-full ${
+          participant.isScreenSharing
+            ? fitMode === 'contain'
+              ? 'object-contain'
+              : 'object-cover'
+            : 'object-cover'
+        } transition-opacity duration-300 ${
           isSelf && !participant.isScreenSharing && userSettings.mirrorSelfVideo ? 'scale-x-[-1]' : ''
         } ${hasVideoTrack ? 'opacity-100' : 'opacity-0'}`}
       />
@@ -117,13 +182,48 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = fals
         </div>
       )}
 
-      {/* Screen Sharing Badge */}
-      {participant.isScreenSharing && (
-        <div className="absolute top-3 right-3 px-2.5 py-1 rounded-full text-xs font-medium bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 backdrop-blur-md flex items-center gap-1.5">
-          <Monitor className="w-3.5 h-3.5" />
-          <span>Presenting</span>
+      {/* Screen Sharing Interactive Controls Overlay */}
+      {participant.isScreenSharing ? (
+        <div className="absolute top-3 right-3 flex items-center gap-1.5 z-10">
+          <div className="px-2.5 py-1 rounded-full text-xs font-medium bg-indigo-500/25 text-indigo-200 border border-indigo-500/40 backdrop-blur-md flex items-center gap-1.5 shadow-sm">
+            <Monitor className="w-3.5 h-3.5 text-indigo-300" />
+            <span>{isSelf ? 'You are presenting' : 'Presenting'}</span>
+          </div>
+
+          {/* Fit / Fill Aspect Ratio Toggle */}
+          <button
+            onClick={() => setFitMode((prev) => (prev === 'contain' ? 'cover' : 'contain'))}
+            title={
+              fitMode === 'contain'
+                ? 'Fill Screen (may crop)'
+                : 'Fit to Screen (Preserve entire screen / aspect ratio)'
+            }
+            className="p-1.5 rounded-lg bg-black/60 hover:bg-black/80 text-slate-200 hover:text-white border border-white/10 backdrop-blur-md transition shadow"
+          >
+            <Scan className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Picture-in-Picture Button */}
+          {document.pictureInPictureEnabled && (
+            <button
+              onClick={togglePiP}
+              title="Picture in Picture"
+              className="p-1.5 rounded-lg bg-black/60 hover:bg-black/80 text-slate-200 hover:text-white border border-white/10 backdrop-blur-md transition shadow"
+            >
+              <PictureInPicture className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          {/* Fullscreen Button */}
+          <button
+            onClick={toggleFullscreen}
+            title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+            className="p-1.5 rounded-lg bg-black/60 hover:bg-black/80 text-slate-200 hover:text-white border border-white/10 backdrop-blur-md transition shadow"
+          >
+            {isFullscreen ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
+          </button>
         </div>
-      )}
+      ) : null}
 
       {/* Bottom Info Bar: Nameplate & Status Icons */}
       <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between pointer-events-none">
@@ -143,3 +243,4 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isSelf = fals
     </div>
   );
 };
+

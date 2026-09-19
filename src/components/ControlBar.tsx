@@ -7,6 +7,7 @@ import {
   Monitor,
   MonitorOff,
   MessageSquare,
+  Users,
   Link,
   Check,
   Settings,
@@ -20,10 +21,13 @@ interface ControlBarProps {
   isScreenSharing: boolean;
   isChatOpen: boolean;
   unreadChatCount: number;
+  isParticipantsOpen: boolean;
+  participantCount: number;
   onToggleAudio: () => void;
   onToggleVideo: () => void;
   onToggleScreenShare: () => void;
   onToggleChat: () => void;
+  onToggleParticipants: () => void;
   onOpenSettings: () => void;
   onLeaveCall: () => void;
 }
@@ -35,10 +39,13 @@ export const ControlBar: React.FC<ControlBarProps> = ({
   isScreenSharing,
   isChatOpen,
   unreadChatCount,
+  isParticipantsOpen,
+  participantCount,
   onToggleAudio,
   onToggleVideo,
   onToggleScreenShare,
   onToggleChat,
+  onToggleParticipants,
   onOpenSettings,
   onLeaveCall,
 }) => {
@@ -112,6 +119,22 @@ export const ControlBar: React.FC<ControlBarProps> = ({
               {unreadChatCount > 9 ? '9+' : unreadChatCount}
             </span>
           )}
+        </button>
+
+        {/* Participants toggle */}
+        <button
+          onClick={onToggleParticipants}
+          title="Participants list"
+          className={`relative p-3 rounded-xl transition-all duration-200 ${
+            isParticipantsOpen
+              ? 'bg-primary-600 text-white'
+              : 'bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white'
+          }`}
+        >
+          <Users className="w-5 h-5" />
+          <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] px-1 items-center justify-center rounded-full bg-slate-700 text-[10px] font-bold text-slate-200 border border-slate-600">
+            {participantCount}
+          </span>
         </button>
 
         {/* Copy Invite Link */}
