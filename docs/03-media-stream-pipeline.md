@@ -126,16 +126,19 @@ const displayStream = await navigator.mediaDevices.getDisplayMedia({
 });
 ```
 
-### Track Swapping Workflow:
-1. **Activation**:
+### Track Swapping & Optimization:
+1. **Acquisition & Content Hinting**:
+   - When acquired via `getDisplayMedia`, the display track's `contentHint` is set to `'detail'` (`screenTrack.contentHint = 'detail'`).
+   - This signals the WebRTC video encoder to prioritize fine spatial detail, text legibility, and high resolution over aggressive motion smoothing.
+2. **Activation**:
    - The current camera video track is removed from the local `MediaStream` and saved in `originalCameraTrackRef.current`.
    - The new `screenTrack` is appended to the stream.
    - `setLocalStream(updatedStream)` is triggered, which invokes `sender.replaceTrack(screenTrack)` across all active peer connections.
-2. **Native "Stop Sharing" Integration**:
+3. **Native "Stop Sharing" Integration**:
    - Browsers display a native floating bar with a "Stop sharing" button.
    - When clicked by the user, the track fires `screenTrack.onended`.
    - The handler stops the screen track, restores `originalCameraTrackRef.current`, swaps the sender track back to camera, and toggles `isScreenSharing = false`.
-3. **Manual Reversion**:
+4. **Manual Reversion**:
    - If the user clicks the in-app "Stop Sharing" button, the screen track is stopped, and the camera track is re-instated or re-acquired.
 
 ---

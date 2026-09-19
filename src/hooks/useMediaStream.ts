@@ -372,6 +372,15 @@ export function useMediaStream(): UseMediaStreamResult {
         const screenTrack = displayStream.getVideoTracks()[0];
         if (!screenTrack) return;
 
+        // Hint to WebRTC encoder to prioritize spatial detail and sharp text over motion
+        try {
+          if ('contentHint' in screenTrack) {
+            screenTrack.contentHint = 'detail';
+          }
+        } catch {
+          // Non-critical if unsupported by browser
+        }
+
         const currentVideoTrack = stream.getVideoTracks()[0];
         if (currentVideoTrack) {
           originalCameraTrackRef.current = currentVideoTrack;
