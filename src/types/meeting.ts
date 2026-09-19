@@ -6,6 +6,7 @@ export interface Participant {
   isScreenSharing: boolean;
   isLocal: boolean;
   stream?: MediaStream;
+  screenStream?: MediaStream;
   connectionState?: RTCPeerConnectionState;
   isSpeaking?: boolean;
 }

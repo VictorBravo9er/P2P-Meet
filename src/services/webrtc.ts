@@ -8,8 +8,66 @@ export const ICE_SERVERS: RTCConfiguration = {
   ],
 };
 
+export type StreamQoSType = 'audio' | 'screen' | 'camera';
+
+/**
+ * Configures network QoS priority (RFC 8835 / RFC 8837), DiffServ/DSCP packet marking,
+ * congestion pacer scheduling, degradation preferences, and dynamic bitrates.
+ *
+ * Priority Matrix:
+ * 1. Audio: Top Priority ('high') -> DSCP Expedited Forwarding (EF / CS5)
+ * 2. Screen Share: 2nd Priority ('medium') -> DSCP Assured Forwarding (AF), maintain-resolution
+ * 3. Camera Video: Least Priority ('low') -> DSCP Best Effort (DF), balanced degradation, throttled bitrate
+ */
+export async function applyStreamQoS(
+  sender: RTCRtpSender,
+  type: StreamQoSType,
+  isScreenSharingActive = false
+): Promise<void> {
+  try {
+    const params = sender.getParameters();
+    if (!params.encodings || params.encodings.length === 0) {
+      params.encodings = [{}];
+    }
+
+    if (type === 'audio') {
+      // Top Priority: Voice / Audio (DSCP EF / Expedited Forwarding, CS5)
+      params.encodings.forEach((enc) => {
+        enc.priority = 'high';
+        (enc as unknown as { networkPriority: string }).networkPriority = 'high';
+      });
+    } else if (type === 'screen') {
+      // 2nd Priority: Screen capture (DSCP AF / Assured Forwarding)
+      params.encodings.forEach((enc) => {
+        enc.priority = 'medium';
+        (enc as unknown as { networkPriority: string }).networkPriority = 'medium';
+      });
+      // Maintain crisp typography and window lines, dropping framerate before resolution
+      params.degradationPreference = 'maintain-resolution';
+    } else if (type === 'camera') {
+      // Least Priority: Camera video (Best Effort / Default DF)
+      params.encodings.forEach((enc) => {
+        enc.priority = 'low';
+        (enc as unknown as { networkPriority: string }).networkPriority = 'low';
+        if (isScreenSharingActive) {
+          // Cap camera bitrate while presenting to conserve upstream bandwidth for the presentation
+          enc.maxBitrate = 350000; // 350 kbps
+        } else {
+          delete enc.maxBitrate;
+        }
+      });
+      params.degradationPreference = 'balanced';
+    }
+
+    await sender.setParameters(params);
+  } catch (err) {
+    // Non-critical if browser does not support setParameters or specific networkPriority fields
+    console.warn(`[WebRTC QoS] Could not apply QoS for ${type}:`, err);
+  }
+}
+
 export interface PeerConnectionCallbacks {
-  onRemoteStream: (peerId: string, stream: MediaStream) => void;
+  onRemoteStream: (peerId: string, stream: MediaStream, isScreen?: boolean) => void;
   onConnectionStateChange: (peerId: string, state: RTCPeerConnectionState) => void;
   onChatMessage: (message: ChatMessage) => void;
   sendSignal: (signal: SignalMessage) => void;
@@ -19,6 +77,8 @@ export class PeerConnectionManager {
   private peerConnections = new Map<string, RTCPeerConnection>();
   private dataChannels = new Map<string, RTCDataChannel>();
   private remoteStreams = new Map<string, MediaStream>();
+  private remoteScreenStreams = new Map<string, MediaStream>();
+  private screenSenders = new Map<string, RTCRtpSender[]>();
   private candidateQueues = new Map<string, RTCIceCandidateInit[]>();
   private makingOffers = new Map<string, boolean>();
   private ignoreOffers = new Map<string, boolean>();
@@ -27,6 +87,7 @@ export class PeerConnectionManager {
   private localPeerId: string;
   private localName: string;
   private localStream: MediaStream | null = null;
+  private localScreenStream: MediaStream | null = null;
   private callbacks: PeerConnectionCallbacks;
 
   constructor(localPeerId: string, localName: string, callbacks: PeerConnectionCallbacks) {
@@ -35,9 +96,15 @@ export class PeerConnectionManager {
     this.callbacks = callbacks;
   }
 
+  private isScreenSender(peerId: string, sender: RTCRtpSender): boolean {
+    const list = this.screenSenders.get(peerId);
+    return !!list && list.includes(sender);
+  }
+
   public setLocalStream(stream: MediaStream | null) {
     const prevStream = this.localStream;
     this.localStream = stream;
+    const isScreenActive = !!this.localScreenStream;
 
     // Update all existing peer connections with the new stream tracks
     for (const [peerId, pc] of this.peerConnections.entries()) {
@@ -45,31 +112,51 @@ export class PeerConnectionManager {
 
       if (stream) {
         stream.getTracks().forEach((track) => {
-          // Find sender for this track's kind
+          // Find sender for this track's kind that is NOT dedicated to screen sharing
           const senders = pc.getSenders();
-          const sender = senders.find((s) => s.track && s.track.kind === track.kind);
+          const sender = senders.find(
+            (s) => s.track && s.track.kind === track.kind && !this.isScreenSender(peerId, s)
+          );
 
           if (sender) {
             if (sender.track !== track) {
-              sender.replaceTrack(track).catch((err) => {
-                console.error(`Failed to replace track for peer ${peerId}:`, err);
-              });
+              sender
+                .replaceTrack(track)
+                .then(() => {
+                  applyStreamQoS(sender, track.kind === 'audio' ? 'audio' : 'camera', isScreenActive);
+                })
+                .catch((err) => {
+                  console.error(`Failed to replace track for peer ${peerId}:`, err);
+                });
+            } else {
+              applyStreamQoS(sender, track.kind === 'audio' ? 'audio' : 'camera', isScreenActive);
             }
           } else {
-            // Check if there is a transceiver without a track of this kind
+            // Check if there is an available transceiver of this kind
             const transceivers = pc.getTransceivers();
             const emptyTransceiver = transceivers.find(
               (t) =>
                 (!t.sender.track || t.sender.track.kind === track.kind) &&
-                t.direction !== 'recvonly'
+                t.direction !== 'recvonly' &&
+                !this.isScreenSender(peerId, t.sender)
             );
             if (emptyTransceiver && emptyTransceiver.sender) {
-              emptyTransceiver.sender.replaceTrack(track).catch((err) => {
-                console.error(`Failed to replace track on transceiver for peer ${peerId}:`, err);
-              });
+              emptyTransceiver.sender
+                .replaceTrack(track)
+                .then(() => {
+                  applyStreamQoS(
+                    emptyTransceiver.sender,
+                    track.kind === 'audio' ? 'audio' : 'camera',
+                    isScreenActive
+                  );
+                })
+                .catch((err) => {
+                  console.error(`Failed to replace track on transceiver for peer ${peerId}:`, err);
+                });
             } else {
               try {
-                pc.addTrack(track, stream);
+                const newSender = pc.addTrack(track, stream);
+                applyStreamQoS(newSender, track.kind === 'audio' ? 'audio' : 'camera', isScreenActive);
               } catch (e) {
                 console.warn(`Could not add track for peer ${peerId}:`, e);
               }
@@ -77,12 +164,72 @@ export class PeerConnectionManager {
           }
         });
       } else if (prevStream) {
-        // Stream stopped: replace track with null
         pc.getSenders().forEach((sender) => {
-          if (sender.track) {
+          if (sender.track && !this.isScreenSender(peerId, sender)) {
             sender.replaceTrack(null).catch(() => {});
           }
         });
+      }
+    }
+  }
+
+  public setLocalScreenStream(screenStream: MediaStream | null) {
+    this.localScreenStream = screenStream;
+    const isScreenActive = !!screenStream;
+
+    // Adjust camera senders QoS dynamically (capping camera bitrate during screen share)
+    for (const [peerId, pc] of this.peerConnections.entries()) {
+      if (pc.connectionState === 'closed') continue;
+      const cameraSender = pc
+        .getSenders()
+        .find((s) => s.track?.kind === 'video' && !this.isScreenSender(peerId, s));
+      if (cameraSender) {
+        applyStreamQoS(cameraSender, 'camera', isScreenActive);
+      }
+    }
+
+    // Manage screen share transceivers across active peer connections
+    for (const [peerId, pc] of this.peerConnections.entries()) {
+      if (pc.connectionState === 'closed') continue;
+
+      const currentScreenSenders = this.screenSenders.get(peerId) || [];
+
+      if (screenStream) {
+        const tracks = screenStream.getTracks();
+        const updatedSenders: RTCRtpSender[] = [];
+
+        tracks.forEach((track) => {
+          const existingSender = currentScreenSenders.find((s) => s.track?.kind === track.kind);
+          if (existingSender) {
+            existingSender
+              .replaceTrack(track)
+              .then(() => {
+                applyStreamQoS(existingSender, track.kind === 'audio' ? 'audio' : 'screen', true);
+              })
+              .catch((e) => console.error(`Replace screen track failed:`, e));
+            updatedSenders.push(existingSender);
+          } else {
+            try {
+              const newSender = pc.addTrack(track, screenStream);
+              applyStreamQoS(newSender, track.kind === 'audio' ? 'audio' : 'screen', true);
+              updatedSenders.push(newSender);
+            } catch (e) {
+              console.warn(`Could not add screen track for peer ${peerId}:`, e);
+            }
+          }
+        });
+
+        this.screenSenders.set(peerId, updatedSenders);
+      } else {
+        // Screen share ended: remove screen senders to trigger renegotiation
+        currentScreenSenders.forEach((sender) => {
+          try {
+            pc.removeTrack(sender);
+          } catch {
+            sender.replaceTrack(null).catch(() => {});
+          }
+        });
+        this.screenSenders.delete(peerId);
       }
     }
   }
@@ -103,15 +250,32 @@ export class PeerConnectionManager {
     // Deterministic politeness: peer with lexicographically lower ID is polite
     const isPolite = this.localPeerId < remotePeerId;
 
-    // Attach local stream tracks
+    // Attach local stream tracks (microphone + webcam)
     if (this.localStream) {
+      const isScreenActive = !!this.localScreenStream;
       this.localStream.getTracks().forEach((track) => {
         try {
-          pc!.addTrack(track, this.localStream!);
+          const sender = pc!.addTrack(track, this.localStream!);
+          applyStreamQoS(sender, track.kind === 'audio' ? 'audio' : 'camera', isScreenActive);
         } catch (e) {
           console.warn('Error adding initial track to peer connection:', e);
         }
       });
+    }
+
+    // Attach local screen share tracks if actively presenting
+    if (this.localScreenStream) {
+      const screenSenders: RTCRtpSender[] = [];
+      this.localScreenStream.getTracks().forEach((track) => {
+        try {
+          const sender = pc!.addTrack(track, this.localScreenStream!);
+          applyStreamQoS(sender, track.kind === 'audio' ? 'audio' : 'screen', true);
+          screenSenders.push(sender);
+        } catch (e) {
+          console.warn('Error adding initial screen track to peer connection:', e);
+        }
+      });
+      this.screenSenders.set(remotePeerId, screenSenders);
     }
 
     // Initialize or reuse remote stream container
@@ -121,23 +285,45 @@ export class PeerConnectionManager {
       this.remoteStreams.set(remotePeerId, remoteStream);
     }
 
-    // Track handler: handles audio & video tracks arriving from peer
+    // Track handler: distinguishes between camera/mic and screen capture tracks
     pc.ontrack = (event) => {
-      let stream = event.streams && event.streams[0];
-      if (!stream) {
-        let existing = this.remoteStreams.get(remotePeerId);
-        if (!existing) {
-          existing = new MediaStream();
-          this.remoteStreams.set(remotePeerId, existing);
+      const track = event.track;
+      const stream = event.streams && event.streams[0];
+      const streamId = stream ? stream.id : '';
+      const isScreen = streamId.startsWith('screen_') || track.contentHint === 'detail';
+
+      if (isScreen) {
+        let screenStream = this.remoteScreenStreams.get(remotePeerId);
+        if (!screenStream) {
+          screenStream = new MediaStream();
+          this.remoteScreenStreams.set(remotePeerId, screenStream);
         }
-        if (!existing.getTracks().some((t) => t.id === event.track.id)) {
-          existing.addTrack(event.track);
+        if (!screenStream.getTracks().some((t) => t.id === track.id)) {
+          screenStream.addTrack(track);
         }
-        stream = existing;
+        track.onended = () => {
+          screenStream?.removeTrack(track);
+          if (screenStream?.getTracks().length === 0) {
+            this.remoteScreenStreams.delete(remotePeerId);
+          }
+          this.callbacks.onRemoteStream(remotePeerId, screenStream!, true);
+        };
+        this.callbacks.onRemoteStream(remotePeerId, screenStream, true);
       } else {
-        this.remoteStreams.set(remotePeerId, stream);
+        let mainStream = this.remoteStreams.get(remotePeerId);
+        if (!mainStream) {
+          mainStream = new MediaStream();
+          this.remoteStreams.set(remotePeerId, mainStream);
+        }
+        if (!mainStream.getTracks().some((t) => t.id === track.id)) {
+          mainStream.addTrack(track);
+        }
+        track.onended = () => {
+          mainStream?.removeTrack(track);
+          this.callbacks.onRemoteStream(remotePeerId, mainStream!, false);
+        };
+        this.callbacks.onRemoteStream(remotePeerId, mainStream, false);
       }
-      this.callbacks.onRemoteStream(remotePeerId, stream);
     };
 
     // ICE Candidate handler
@@ -369,6 +555,8 @@ export class PeerConnectionManager {
     }
 
     this.remoteStreams.delete(remotePeerId);
+    this.remoteScreenStreams.delete(remotePeerId);
+    this.screenSenders.delete(remotePeerId);
     this.candidateQueues.delete(remotePeerId);
     this.makingOffers.delete(remotePeerId);
     this.ignoreOffers.delete(remotePeerId);

@@ -9,6 +9,7 @@ interface UseMeetingRoomOptions {
   roomId: string;
   userName: string;
   localStream: MediaStream | null;
+  localScreenStream: MediaStream | null;
   isAudioMuted: boolean;
   isVideoOff: boolean;
   isScreenSharing: boolean;
@@ -18,6 +19,7 @@ export function useMeetingRoom({
   roomId,
   userName,
   localStream,
+  localScreenStream,
   isAudioMuted,
   isVideoOff,
   isScreenSharing,
@@ -49,17 +51,27 @@ export function useMeetingRoom({
     }
   }, []);
 
-  // Update remote stream in state
-  const handleRemoteStream = useCallback((peerId: string, stream: MediaStream) => {
-    setParticipants((prev) =>
-      prev.map((p) => {
-        if (p.id === peerId) {
-          return { ...p, stream };
-        }
-        return p;
-      })
-    );
-  }, []);
+  // Update remote stream in state (handles both camera and screen streams independently)
+  const handleRemoteStream = useCallback(
+    (peerId: string, stream: MediaStream, isScreen = false) => {
+      setParticipants((prev) =>
+        prev.map((p) => {
+          if (p.id === peerId) {
+            if (isScreen) {
+              return {
+                ...p,
+                screenStream: stream,
+                isScreenSharing: stream.getTracks().length > 0,
+              };
+            }
+            return { ...p, stream };
+          }
+          return p;
+        })
+      );
+    },
+    []
+  );
 
   // Update connection state
   const handleConnectionStateChange = useCallback((peerId: string, state: RTCPeerConnectionState) => {
@@ -142,9 +154,12 @@ export function useMeetingRoom({
     });
     rtcManagerRef.current = rtcManager;
 
-    // Attach initial stream
+    // Attach initial streams
     if (localStream) {
       rtcManager.setLocalStream(localStream);
+    }
+    if (localScreenStream) {
+      rtcManager.setLocalScreenStream(localScreenStream);
     }
 
     // 2. Initialize Supabase Realtime Channel
@@ -164,11 +179,18 @@ export function useMeetingRoom({
       }
 
       if (payload.type === 'state-sync' && payload.state) {
-        // Participant state update (mute/unmute, video on/off)
+        // Participant state update (mute/unmute, video on/off, screen share)
         setParticipants((prev) =>
-          prev.map((p) =>
-            p.id === payload.fromPeerId ? { ...p, ...payload.state } : p
-          )
+          prev.map((p) => {
+            if (p.id === payload.fromPeerId) {
+              const updated = { ...p, ...payload.state };
+              if (payload.state?.isScreenSharing === false) {
+                updated.screenStream = undefined;
+              }
+              return updated;
+            }
+            return p;
+          })
         );
         return;
       }
@@ -222,6 +244,7 @@ export function useMeetingRoom({
                 isVideoOff: existing.isVideoOff,
                 isScreenSharing: existing.isScreenSharing,
                 stream: existing.stream,
+                screenStream: existing.screenStream,
                 connectionState: existing.connectionState,
               }
             : newP;
@@ -306,12 +329,19 @@ export function useMeetingRoom({
     };
   }, [roomId, localPeerId, userName]);
 
-  // Keep WebRTC manager synced with updated local media stream
+  // Keep WebRTC manager synced with updated local media stream (microphone + camera)
   useEffect(() => {
     if (rtcManagerRef.current) {
       rtcManagerRef.current.setLocalStream(localStream);
     }
   }, [localStream]);
+
+  // Keep WebRTC manager synced with updated screen capture stream
+  useEffect(() => {
+    if (rtcManagerRef.current) {
+      rtcManagerRef.current.setLocalScreenStream(localScreenStream);
+    }
+  }, [localScreenStream]);
 
   // Sync state changes (mute, video, screen share) to peers via lightweight broadcast
   useEffect(() => {

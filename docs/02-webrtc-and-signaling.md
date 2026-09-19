@@ -150,31 +150,113 @@ This guarantees that stale or desynchronized connections automatically self-heal
 
 ---
 
-## 6. Track Routing & Clean Replacement
+## 6. Multi-Stream Architecture & Track Routing
 
-When local media streams are toggled (e.g., switching between webcam and screen presentation):
-- The application invokes `setLocalStream(newStream)`.
-- Rather than calling `pc.addTrack()` indiscriminately (which creates redundant transceivers and triggers renegotiation loops), the manager inspects existing senders matching the track kind (`audio` or `video`):
-```typescript
-const senders = pc.getSenders();
-const sender = senders.find((s) => s.track && s.track.kind === track.kind);
+Rather than swapping camera and screen tracks within a single transceiver (which creates state bleed and forces a mutual exclusion between camera and screen), the application implements a **fully decoupled multi-stream architecture**:
 
-if (sender) {
-  if (sender.track !== track) {
-    sender.replaceTrack(track).catch((err) => {
-      console.error(`Failed to replace track:`, err);
-    });
-  }
-} else {
-  // Transceiver / initial addTrack fallback
-  pc.addTrack(track, stream);
-}
 ```
-Because `sender.replaceTrack()` seamlessly swaps the active media source without changing the SDP m-line count, **no renegotiation is required** when switching camera to screen or swapping devices.
+                              PeerConnectionManager
+                                        │
+           ┌────────────────────────────┴────────────────────────────┐
+           ▼                                                         ▼
+    Base Stream (Camera & Mic)                                Screen Stream
+    • Stream ID: cam_<localPeerId>                            • Stream ID: screen_<localPeerId>
+    • Audio Track: Microphone                                 • Video Track: Screen Presentation (contentHint: 'detail')
+    • Video Track: Webcam                                     • Audio Track: System/Tab Audio (optional)
+    • Senders: pc.getSenders() (audio/video)                  • Senders: screenSenders.get(peerId)
+```
+
+### Track Separation and Stream Identification
+1. **Local Stream Tagging**:
+   - Camera/Mic streams are labeled with the prefix `cam_${localPeerId}`.
+   - Screen streams are labeled with the prefix `screen_${localPeerId}`.
+   - Screen capture video tracks are tagged with `screenTrack.contentHint = 'detail'` to instruct the video encoder to prioritize spatial sharpness and readability over framerate.
+2. **Dedicated Sender Lifecycle**:
+   - Camera/mic tracks are managed through primary senders.
+   - Screen tracks are added via `pc.addTrack(track, screenStream)` and cataloged in a dedicated map: `screenSenders: Map<string, RTCRtpSender[]>`.
+   - When screen sharing stops, all screen senders are removed via `pc.removeTrack(sender)`, and `screenSenders` is cleared.
+3. **Receiver-Side Disambiguation (`ontrack`)**:
+   - When remote media arrives, the receiver inspects the inbound track and stream:
+     ```typescript
+     const isScreen =
+       stream.id.startsWith('screen_') ||
+       event.track.contentHint === 'detail' ||
+       event.track.label.toLowerCase().includes('screen');
+     ```
+   - If `isScreen` is true, the track is assembled into a dedicated `remoteScreenStreams.get(peerId)` and dispatched to `onRemoteStream(peerId, stream, true)`.
+   - If false, it is dispatched to the primary camera/mic handler `onRemoteStream(peerId, stream, false)`.
 
 ---
 
-## 7. Data Channels: `meeting-chat`
+## 7. Network Quality of Service (QoS) & DSCP Priorities
+
+To guarantee flawless audio intelligibility and crisp presentation fidelity over constrained home and enterprise networks, `PeerConnectionManager` configures real-time **Quality of Service (QoS)** and **DSCP (Differentiated Services Code Point)** packet prioritization via the WebRTC `RTCRtpSender.setParameters()` API.
+
+### 7.1 QoS Priority Matrix
+
+| Media Stream Type | Track Kind | `priority` | `networkPriority` | Target DSCP Marking | Degradation Preference | Bandwidth Pacing Policy |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Microphone & Screen Audio** | `audio` | `'high'` | `'high'` | **Expedited Forwarding (EF / DSCP 46)** | N/A (Loss-tolerant low bitrate) | Always unconstrained; prioritized by socket queue and congestion pacer |
+| **Screen Share Presentation** | `video` | `'medium'` | `'medium'` | **Assured Forwarding (AF41 / DSCP 34)** | `'maintain-resolution'` | Uncapped; preserves native resolution and slide text sharpness |
+| **Webcam Video (Idle Screen)** | `video` | `'low'` | `'low'` | **Best Effort (DF / DSCP 0)** | `'balanced'` | Dynamic adaptation based on WebRTC bandwidth estimation |
+| **Webcam Video (During Screen Share)** | `video` | `'low'` | `'low'` | **Best Effort (DF / DSCP 0)** | `'balanced'` | **Hard-capped at 350 kbps** (`maxBitrate: 350000`) to guarantee screen share headroom |
+
+### 7.2 Implementation (`applyStreamQoS`)
+Every sender is dynamically configured upon addition and re-tuned when screen sharing begins or terminates:
+
+```typescript
+private async applyStreamQoS(
+  sender: RTCRtpSender,
+  type: 'audio' | 'video' | 'screen',
+  isScreenSharingActive = false
+) {
+  try {
+    const params = sender.getParameters();
+    if (!params.encodings || params.encodings.length === 0) {
+      params.encodings = [{}];
+    }
+
+    const encoding = params.encodings[0];
+
+    if (type === 'audio') {
+      // Tier 1: Highest priority (DSCP Expedited Forwarding)
+      encoding.priority = 'high';
+      encoding.networkPriority = 'high';
+    } else if (type === 'screen') {
+      // Tier 2: Medium priority (DSCP Assured Forwarding, maintain slide sharpness)
+      encoding.priority = 'medium';
+      encoding.networkPriority = 'medium';
+      params.degradationPreference = 'maintain-resolution';
+    } else if (type === 'video') {
+      // Tier 3: Low priority (Best Effort)
+      encoding.priority = 'low';
+      encoding.networkPriority = 'low';
+      params.degradationPreference = 'balanced';
+
+      // Congestion protection: cap camera bitrate when sharing screen in mesh topology
+      if (isScreenSharingActive) {
+        encoding.maxBitrate = 350_000; // 350 kbps
+      } else {
+        delete encoding.maxBitrate;
+      }
+    }
+
+    await sender.setParameters(params);
+  } catch (err) {
+    // Graceful fallback on browsers without DSCP/priority support
+    console.debug('[WebRTC QoS] Could not apply sender QoS parameters:', err);
+  }
+}
+```
+
+### 7.3 Congestion Headroom Protection in Full Mesh
+In a decentralized full mesh topology with $N$ peers, transmitting both 1080p screen sharing and 720p/1080p webcam feeds concurrently requires substantial upstream throughput:
+- Without throttling, unconstrained video streams quickly saturate consumer residential uplink buffers, introducing packet drop and audio stutter.
+- By capping webcam video to 350 kbps during screen sharing and instructing the browser congestion controller to prioritize audio (EF) and screen details (AF41), the application guarantees that voice and presentation remain perfectly fluid even under severe link contention.
+
+---
+
+## 8. Data Channels: `meeting-chat`
 
 - **Channel Label**: `meeting-chat`
 - **Creation Rule**: To prevent duplicate data channels, only the **Polite Peer** (`localPeerId < remotePeerId`) calls `pc.createDataChannel('meeting-chat', { ordered: true })`.

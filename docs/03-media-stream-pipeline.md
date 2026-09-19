@@ -115,31 +115,49 @@ if (audioCtx.state === 'suspended') {
 
 ---
 
-## 4. Screen Sharing Architecture
+## 4. Screen Sharing Architecture (Decoupled Multi-Stream)
 
-Screen sharing is activated through `toggleScreenShare()`:
+Rather than swapping screen video into the existing webcam track (which causes mutual exclusion and ties camera mute buttons to the screen cast), the application implements an independent, parallel **`localScreenStream` pipeline**:
 
-```typescript
-const displayStream = await navigator.mediaDevices.getDisplayMedia({
-  video: true,
-  audio: false,
-});
+```
+                          User Action (toggleScreenShare)
+                                        │
+                                        ▼
+                        getDisplayMedia({ video: true, audio: true })
+                                        │
+                         ┌──────────────┴──────────────┐
+                         ▼                             ▼
+                 Screen Video Track           Screen Audio Track
+             (contentHint = 'detail')       (System / Tab Audio)
+                         │                             │
+                         └──────────────┬──────────────┘
+                                        │
+                                        ▼
+                          localScreenStream (MediaStream)
+                                        │
+              ┌─────────────────────────┴─────────────────────────┐
+              ▼                                                   ▼
+       Local UI Spotlight                             PeerConnectionManager
+  (VideoTile isScreenShareTile)                    (setLocalScreenStream)
+                                                                  │
+                                                                  ▼
+                                                      Dedicated Screen Senders
+                                                    (QoS Priority: Medium / AF41)
 ```
 
-### Track Swapping & Optimization:
-1. **Acquisition & Content Hinting**:
-   - When acquired via `getDisplayMedia`, the display track's `contentHint` is set to `'detail'` (`screenTrack.contentHint = 'detail'`).
-   - This signals the WebRTC video encoder to prioritize fine spatial detail, text legibility, and high resolution over aggressive motion smoothing.
-2. **Activation**:
-   - The current camera video track is removed from the local `MediaStream` and saved in `originalCameraTrackRef.current`.
-   - The new `screenTrack` is appended to the stream.
-   - `setLocalStream(updatedStream)` is triggered, which invokes `sender.replaceTrack(screenTrack)` across all active peer connections.
-3. **Native "Stop Sharing" Integration**:
-   - Browsers display a native floating bar with a "Stop sharing" button.
-   - When clicked by the user, the track fires `screenTrack.onended`.
-   - The handler stops the screen track, restores `originalCameraTrackRef.current`, swaps the sender track back to camera, and toggles `isScreenSharing = false`.
-4. **Manual Reversion**:
-   - If the user clicks the in-app "Stop Sharing" button, the screen track is stopped, and the camera track is re-instated or re-acquired.
+### Decoupled Lifecycle:
+1. **Independent Acquisition**:
+   - Captured via `navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })`.
+   - Captures both presentation video and optional system/browser tab audio.
+   - Screen video track is immediately configured with `screenTrack.contentHint = 'detail'` to instruct WebRTC to preserve 1080p/4K fine text and lines.
+2. **True Camera & Screen Decoupling**:
+   - `localStream` (webcam and microphone) remains completely untouched and active.
+   - Presenters can share their screen while simultaneously displaying their camera feed in the participant strip.
+   - Turning off the camera via `toggleVideo()` sets `cameraTrack.enabled = false` on `localStream` only; the screen share remains 100% active and unimpacted.
+3. **Native & Manual Tear Down**:
+   - **Native OS / Browser Bar**: Clicking the browser's floating "Stop sharing" button triggers `screenTrack.onended`.
+   - **In-App Controls**: Clicking "Stop Sharing" on the presentation banner, control bar, or presentation toolbar invokes `toggleScreenShare()`.
+   - In both cases, all screen tracks are stopped, `localScreenStream` is set to `null`, `rtcManager.setLocalScreenStream(null)` cleans up screen transceivers/senders, and `isScreenSharing = false` is broadcast to peers.
 
 ---
 
